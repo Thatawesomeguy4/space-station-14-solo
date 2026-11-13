@@ -88,7 +88,7 @@ namespace Content.Server.Database
             await db.DbContext.SaveChangesAsync();
         }
 
-        public async Task SaveCharacterSlotAsync(NetUserId userId, HumanoidCharacterProfile? humanoid, int slot)
+        public async Task<int?> SaveCharacterSlotAsync(NetUserId userId, HumanoidCharacterProfile? humanoid, int slot)
         {
             await using var db = await GetDb();
 
@@ -96,7 +96,7 @@ namespace Content.Server.Database
             {
                 await DeleteCharacterSlot(db.DbContext, userId, slot);
                 await db.DbContext.SaveChangesAsync();
-                return;
+                return null;
             }
 
             var oldProfile = db.DbContext.Profile
@@ -123,6 +123,7 @@ namespace Content.Server.Database
             }
 
             await db.DbContext.SaveChangesAsync();
+            return newProfile.Id;
         }
 
         private static async Task DeleteCharacterSlot(ServerDbContext db, NetUserId userId, int slot)

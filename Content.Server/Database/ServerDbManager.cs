@@ -44,7 +44,7 @@ namespace Content.Server.Database
 
         Task MakeCharacterSlotLegacyAsync(NetUserId userId, int slot);
 
-        Task SaveCharacterSlotAsync(NetUserId userId, HumanoidCharacterProfile? profile, int slot);
+        Task<int?> SaveCharacterSlotAsync(NetUserId userId, HumanoidCharacterProfile? profile, int slot);
 
         Task SaveAdminOOCColorAsync(NetUserId userId, Color color);
 
@@ -489,7 +489,7 @@ namespace Content.Server.Database
             return RunDbCommand(() => _db.MakeCharacterSlotLegacyAsync(userId, slot));
         }
 
-        public Task SaveCharacterSlotAsync(NetUserId userId, HumanoidCharacterProfile? profile, int slot)
+        public Task<int?> SaveCharacterSlotAsync(NetUserId userId, HumanoidCharacterProfile? profile, int slot)
         {
             DbWriteOpsMetric.Inc();
             return RunDbCommand(() => _db.SaveCharacterSlotAsync(userId, profile, slot));

@@ -1,0 +1,9 @@
+living-station-bar-request-water = Request water
+living-station-bar-water-ready = There is already water on the counter.
+living-station-bar-order-accepted = The bartender will bring your water.
+living-station-bar-order-unavailable = The bartender can't take a water order right now.
+living-station-bar-dialogue-fallback = Give me a moment. You can still request water at the counter.
+living-station-bar-memory-saved = I'll remember you said your ship is called { $name }.
+living-station-bar-memory-recalled = You told me your ship is called { $name }.
+living-station-bar-memory-missing = I don't remember you telling me your ship's name.
+living-station-bar-memory-unavailable = I can't check my notes right now.

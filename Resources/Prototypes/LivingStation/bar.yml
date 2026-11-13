@@ -1,0 +1,12 @@
+- type: entity
+  parent: MobHuman
+  id: MobLivingStationBartender
+  name: station bartender
+  components:
+  - type: InputMover
+  - type: MobMover
+  - type: Loadout
+    prototypes: [BartenderGear]
+    roleLoadout: [JobBartender]
+  - type: NpcFactionMember
+    factions: [NanoTrasen]

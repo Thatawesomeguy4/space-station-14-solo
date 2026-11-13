@@ -1,0 +1,50 @@
+- type: entity
+  parent: MobHuman
+  id: MobLivingStationJanitor
+  name: station janitor
+  components:
+  - type: InputMover
+  - type: MobMover
+  - type: Loadout
+    prototypes: [LivingStationJanitorGear]
+    roleLoadout: [JobJanitor]
+  - type: NpcFactionMember
+    factions: [NanoTrasen]
+  - type: HTN
+    rootTask:
+      task: LivingStationJanitorCompound
+
+- type: startingGear
+  parent: JanitorGear
+  id: LivingStationJanitorGear
+  inhand:
+  - AdvMopItem
+  - TrashBag
+
+- type: htnCompound
+  id: LivingStationJanitorCompound
+  branches:
+  - preconditions:
+    - !type:ActiveHandComponentPrecondition
+      components:
+      - type: Absorbent
+    tasks:
+    - !type:HTNPrimitiveTask
+      operator: !type:UtilityOperator
+        proto: NearbyPuddles
+    - !type:HTNPrimitiveTask
+      operator: !type:MoveToOperator
+        rangeKey: MeleeRange
+    - !type:HTNPrimitiveTask
+      operator: !type:MopPuddleOperator
+  - tasks:
+    - !type:HTNPrimitiveTask
+      operator: !type:PickNearbyTrashOperator
+    - !type:HTNPrimitiveTask
+      operator: !type:MoveToOperator
+        rangeKey: MeleeRange
+    - !type:HTNPrimitiveTask
+      operator: !type:BagTrashOperator
+  - tasks:
+    - !type:HTNCompoundTask
+      task: IdleCompound

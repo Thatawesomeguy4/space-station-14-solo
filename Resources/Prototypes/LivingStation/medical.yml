@@ -1,0 +1,68 @@
+- type: entity
+  parent: MobHuman
+  id: MobLivingStationMedic
+  name: station medic
+  components:
+  - type: InputMover
+  - type: MobMover
+  - type: LivingStationMedic
+  - type: Loadout
+    prototypes: [LivingStationMedicGear]
+    roleLoadout: [JobMedicalDoctor]
+  - type: NpcFactionMember
+    factions: [NanoTrasen]
+
+- type: startingGear
+  parent: DoctorGear
+  id: LivingStationMedicGear
+  inhand:
+  - Brutepack
+  - Ointment
+
+- type: entity
+  parent: MobCivilian
+  id: MobLivingStationPatient
+  name: Medbay patient
+
+- type: entity
+  parent: MarkerBase
+  id: LivingStationMedicalTreatmentPoint
+  name: medical treatment point
+  components:
+  - type: MedicalTreatmentPoint
+    workerOffset: 0,-2
+  - type: Sprite
+    layers:
+    - state: red
+
+- type: entity
+  parent: CrateGenericSteel
+  id: LivingStationMedicalChemistryKit
+  name: Medbay chemical supply crate
+  description: Reagents and clean beakers for the station medic. Bring it to Medbay after cargo delivers it.
+  components:
+  - type: MedicalChemistryKit
+  - type: EntityStorage
+    capacity: 40
+  - type: EntityTableContainerFill
+    containers:
+      entity_storage: !type:AllSelector
+        children:
+        - id: JugCarbon
+        - id: JugSilicon
+        - id: JugOxygen
+        - id: JugSugar
+        - id: JugNitrogen
+        - id: JugPotassium
+        - id: JugPhosphorus
+        - id: JugRadium
+        - id: JugHydrogen
+        - id: JugSulfur
+        - id: JugSodium
+        - id: JugIodine
+        - id: JugWater
+        - id: JugLithium
+        - id: JugEthanol
+        - id: FoodShakerSalt
+        - id: Beaker
+          amount: 18

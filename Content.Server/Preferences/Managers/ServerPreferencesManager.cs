@@ -271,7 +271,13 @@ namespace Content.Server.Preferences.Managers
             prefsData.Prefs = new PlayerPreferences(profiles, slot, curPrefs.AdminOOCColor, curPrefs.ConstructionFavorites);
 
             if (ShouldStorePrefs(session.Channel.AuthType))
-                await _db.SaveCharacterSlotAsync(userId, profile, slot);
+            {
+                var profileId = await _db.SaveCharacterSlotAsync(userId, profile, slot);
+                if (profileId is { } id &&
+                    prefsData.Prefs!.Characters.TryGetValue(slot, out var currentProfile) &&
+                    ReferenceEquals(currentProfile, profile))
+                    prefsData.ProfileIds[slot] = id;
+            }
         }
 
         public async Task SetConstructionFavorites(NetUserId userId, List<ProtoId<ConstructionPrototype>> favorites)
@@ -332,6 +338,7 @@ namespace Content.Server.Preferences.Managers
 
             var arr = new Dictionary<int, HumanoidCharacterProfile>(curPrefs.Characters);
             arr.Remove(slot);
+            prefsData.ProfileIds.Remove(slot);
 
             prefsData.Prefs = new PlayerPreferences(arr, nextSlot ?? curPrefs.SelectedCharacterIndex, curPrefs.AdminOOCColor, curPrefs.ConstructionFavorites);
             _afkManager.PlayerDidAction(message.MsgChannel);
@@ -412,6 +419,8 @@ namespace Content.Server.Preferences.Managers
                 {
                     var prefs = await GetOrCreatePreferencesAsync(session.UserId, cancel);
                     prefsData.Prefs = ConvertPreferences(prefs);
+                    foreach (var profile in prefs.Profiles)
+                        prefsData.ProfileIds[profile.Slot] = profile.Id;
                 }
             }
         }
@@ -463,6 +472,21 @@ namespace Content.Server.Preferences.Managers
             }
 
             playerPreferences = null;
+            return false;
+        }
+
+        public bool TryGetSavedProfileId(NetUserId userId, HumanoidCharacterProfile profile, out int profileId)
+        {
+            profileId = default;
+            if (!_cachedPlayerPrefs.TryGetValue(userId, out var data) || !data.PrefsLoaded || data.Prefs is not { } prefs)
+                return false;
+
+            foreach (var (slot, character) in prefs.Characters)
+            {
+                if (ReferenceEquals(character, profile))
+                    return data.ProfileIds.TryGetValue(slot, out profileId);
+            }
+
             return false;
         }
 
@@ -542,6 +566,7 @@ namespace Content.Server.Preferences.Managers
         {
             public bool PrefsLoaded;
             public PlayerPreferences? Prefs;
+            public readonly Dictionary<int, int> ProfileIds = new();
         }
 
         void IPostInjectInit.PostInject()

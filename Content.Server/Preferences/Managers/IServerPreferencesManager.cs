@@ -18,6 +18,7 @@ namespace Content.Server.Preferences.Managers
         void OnClientDisconnected(ICommonSession session);
 
         bool TryGetCachedPreferences(NetUserId userId, [NotNullWhen(true)] out PlayerPreferences? playerPreferences);
+        bool TryGetSavedProfileId(NetUserId userId, HumanoidCharacterProfile profile, out int profileId);
         PlayerPreferences GetPreferences(NetUserId userId);
         PlayerPreferences? GetPreferencesOrNull(NetUserId? userId);
         IEnumerable<KeyValuePair<NetUserId, HumanoidCharacterProfile>> GetSelectedProfilesForPlayers(List<NetUserId> userIds);

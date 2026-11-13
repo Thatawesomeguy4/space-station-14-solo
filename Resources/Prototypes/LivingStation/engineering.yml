@@ -1,0 +1,43 @@
+- type: entity
+  parent: MobHuman
+  id: MobLivingStationEngineer
+  name: station engineer
+  components:
+  - type: InputMover
+  - type: MobMover
+  - type: Loadout
+    prototypes: [LivingStationEngineerGear]
+    roleLoadout: [JobStationEngineer]
+  - type: NpcFactionMember
+    factions: [NanoTrasen]
+
+- type: startingGear
+  parent: StationEngineerGear
+  id: LivingStationEngineerGear
+  inhand:
+  - LightReplacerFilled
+
+- type: entity
+  parent: MobLivingStationEngineer
+  id: MobLivingStationChiefEngineer
+  name: chief engineer
+  components:
+  - type: Loadout
+    prototypes: [LivingStationChiefEngineerGear]
+    roleLoadout: [JobChiefEngineer]
+
+- type: startingGear
+  parent: ChiefEngineerGear
+  id: LivingStationChiefEngineerGear
+  equipment:
+    ears: LivingStationChiefEngineerHeadset
+  inhand:
+  - LightReplacerFilled
+
+- type: entity
+  parent: ClothingHeadsetCE
+  id: LivingStationChiefEngineerHeadset
+  name: chief engineer's emergency headset
+  description: A command headset with a direct transmitter for use during station telecom outages.
+  components:
+  - type: TelecomExempt

@@ -1,0 +1,44 @@
+- type: entity
+  parent: MobHuman
+  id: MobLivingStationSecurityOfficer
+  name: station security officer
+  components:
+  - type: InputMover
+  - type: MobMover
+  - type: Loadout
+    roleLoadout: [JobSecurityOfficer]
+  - type: NpcFactionMember
+    factions: [NanoTrasen]
+  - type: HTN
+    enabled: false
+    rootTask:
+      task: IdleCompound
+    blackboard:
+      NavInteract: !type:Bool
+        true
+
+- type: entity
+  parent: MobLivingStationSecurityOfficer
+  id: MobLivingStationHeadOfSecurity
+  name: head of security
+  components:
+  - type: Loadout
+    prototypes: [LivingStationHeadOfSecurityGear]
+    roleLoadout: [JobHeadOfSecurity]
+
+- type: startingGear
+  id: LivingStationHeadOfSecurityGear
+  equipment:
+    id: HoSPDA
+    ears: ClothingHeadsetAltSecurity
+    eyes: ClothingEyesGlassesSecurity
+
+- type: entity
+  parent: MarkerBase
+  id: LivingStationSecurityPatrolPoint
+  name: security patrol waypoint
+  components:
+  - type: SecurityPatrolPoint
+  - type: Sprite
+    layers:
+    - state: red

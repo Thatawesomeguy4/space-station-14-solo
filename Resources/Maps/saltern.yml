@@ -5,7 +5,7 @@ meta:
   forkId: ""
   forkVersion: ""
   time: 09/22/2026 18:21:07
-  entityCount: 11484
+  entityCount: 11494
 maps:
 - 658
 grids:
@@ -49794,6 +49794,82 @@ entities:
     - type: Transform
       parent: 31
       pos: 0.5,7.5
+- proto: LivingStationCargoDropoff
+  entities:
+  - uid: 11485
+    components:
+    - type: Transform
+      parent: 31
+      pos: 14.5,10.5
+      rot: 3.141592653589793 rad
+- proto: LivingStationCargoPickup
+  entities:
+  - uid: 11486
+    components:
+    - type: Transform
+      parent: 31
+      pos: 15.5,10.5
+      rot: 3.141592653589793 rad
+- proto: LivingStationCargoMedbay
+  entities:
+  - uid: 11491
+    components:
+    - type: Transform
+      parent: 31
+      pos: 10.5,-8.5
+      rot: 3.141592653589793 rad
+- proto: LivingStationCargoEngineering
+  entities:
+  - uid: 11492
+    components:
+    - type: Transform
+      parent: 31
+      pos: 28.5,5.5
+      rot: 3.141592653589793 rad
+- proto: LivingStationCargoJanitorial
+  entities:
+  - uid: 11493
+    components:
+    - type: Transform
+      parent: 31
+      pos: -18.5,-12.5
+      rot: 3.141592653589793 rad
+- proto: LivingStationCargoReturns
+  entities:
+  - uid: 11494
+    components:
+    - type: Transform
+      parent: 31
+      pos: 15.5,11.5
+      rot: 3.141592653589793 rad
+- proto: LivingStationMedicalTreatmentPoint
+  entities:
+  - uid: 11490
+    components:
+    - type: Transform
+      parent: 31
+      pos: 10.5,-9.5
+- proto: LivingStationSecurityPatrolPoint
+  entities:
+  - uid: 11487
+    components:
+    - type: Transform
+      parent: 31
+      pos: -9.5,15.5
+  - uid: 11488
+    components:
+    - type: Transform
+      parent: 31
+      pos: -7.5,15.5
+    - type: SecurityPatrolPoint
+      order: 1
+  - uid: 11489
+    components:
+    - type: Transform
+      parent: 31
+      pos: -7.5,13.5
+    - type: SecurityPatrolPoint
+      order: 2
 - proto: LockerWeldingSuppliesFilled
   entities:
   - uid: 10904
@@ -52558,6 +52634,9 @@ entities:
     - type: Transform
       parent: 31
       pos: 29.5,6.5
+    - type: EngineeringRepairFixture
+      workerOffset: -2,-1
+      approachOffset: -1,0
   - uid: 6463
     components:
     - type: Transform
@@ -60988,9 +61067,15 @@ entities:
       pos: -6.5,-4.5
   - uid: 4063
     components:
+    - type: MetaData
+      name: bar service counter
     - type: Transform
       parent: 31
       pos: -4.5,-4.5
+    - type: BarServiceCounter
+      staffOffset: 0,-1
+      stockOffset: 2,-1
+      stockApproachOffset: 1,-1
   - uid: 4093
     components:
     - type: Transform

@@ -1,0 +1,80 @@
+- type: entity
+  parent: MobHuman
+  id: MobLivingStationCargoTechnician
+  name: station cargo technician
+  components:
+  - type: InputMover
+  - type: MobMover
+  - type: Loadout
+    prototypes: [CargoTechGear]
+    roleLoadout: [JobCargoTechnician]
+  - type: NpcFactionMember
+    factions: [NanoTrasen]
+  - type: Access
+    tags: [Cargo, Maintenance, Medical, Engineering, Janitor]
+  - type: HTN
+    enabled: false
+    rootTask:
+      task: IdleCompound
+    blackboard:
+      NavInteract: !type:Bool
+        true
+
+- type: entity
+  parent: BaseCargoPallet
+  id: LivingStationCargoPickup
+  name: delivery pickup pallet
+  components:
+  - type: CargoDeliveryPickup
+  - type: Sprite
+    layers:
+    - sprite: Structures/catwalk.rsi
+      state: catwalk_preview
+      color: '#E8AC63'
+
+- type: entity
+  parent: BaseCargoPallet
+  id: LivingStationCargoDropoff
+  name: delivery drop-off pallet
+  components:
+  - type: Sprite
+    layers:
+    - sprite: Structures/catwalk.rsi
+      state: catwalk_preview
+      color: '#7ED2A9'
+
+- type: entity
+  parent: LivingStationCargoDropoff
+  id: LivingStationCargoMedbay
+  name: Medbay freight pallet
+  description: Receives medical supplies and chemical kits. Leave a closed, empty crate here for Cargo to collect.
+  components:
+  - type: CargoDepartmentPallet
+    department: Medical
+
+- type: entity
+  parent: LivingStationCargoDropoff
+  id: LivingStationCargoEngineering
+  name: Engineering freight pallet
+  description: Receives electrical supplies. Leave a closed, empty crate here for Cargo to collect.
+  components:
+  - type: CargoDepartmentPallet
+    department: Engineering
+
+- type: entity
+  parent: LivingStationCargoDropoff
+  id: LivingStationCargoJanitorial
+  name: Janitorial freight pallet
+  description: Receives cleaning supplies. Leave a closed, empty crate here for Cargo to collect.
+  components:
+  - type: CargoDepartmentPallet
+    department: Janitorial
+
+- type: entity
+  parent: LivingStationCargoDropoff
+  id: LivingStationCargoReturns
+  name: empty crate return pallet
+  description: Collect returned crates here for reuse.
+  components:
+  - type: CargoDepartmentPallet
+    department: Returns

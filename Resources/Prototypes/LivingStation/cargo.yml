@@ -11,7 +11,7 @@
   - type: NpcFactionMember
     factions: [NanoTrasen]
   - type: Access
-    tags: [Cargo, Maintenance, Medical, Engineering, Janitor]
+    tags: [Cargo, Maintenance, Medical, Engineering, Janitor, Research]
   - type: HTN
     enabled: false
     rootTask:
@@ -19,6 +19,15 @@
     blackboard:
       NavInteract: !type:Bool
         true
+
+- type: entity
+  parent: MobLivingStationCargoTechnician
+  id: MobLivingStationQuartermaster
+  name: quartermaster
+  components:
+  - type: Loadout
+    prototypes: [QuartermasterGear]
+    roleLoadout: [JobQuartermaster]
 
 - type: entity
   parent: BaseCargoPallet
@@ -73,8 +82,107 @@
 - type: entity
   parent: LivingStationCargoDropoff
   id: LivingStationCargoReturns
-  name: empty crate return pallet
+  name: crate return pallet
   description: Collect returned crates here for reuse.
   components:
   - type: CargoDepartmentPallet
     department: Returns
+
+- type: entity
+  parent: LivingStationCargoDropoff
+  id: LivingStationCargoExport
+  name: steel export pallet
+  description: Stage a closed crate containing only steel sheets here, then submit the shipment at the cargo request computer.
+  components:
+  - type: CargoDepartmentPallet
+    department: Export
+
+- type: entity
+  parent: ClosetTool
+  id: LivingStationEngineeringStockroom
+  name: engineering stockroom cabinet
+  description: Holds power cable, replacement lights, and steel hull tiles. Close it after use so Cargo can check stock.
+  components:
+  - type: CargoStockroom
+    department: Engineering
+  - type: EntityTableContainerFill
+    containers:
+      entity_storage: !type:AllSelector
+        children:
+        - id: CableApcStack10
+        - id: FloorTileItemSteel
+        - id: LightBulb
+          amount: 2
+        - id: LightTube
+          amount: 2
+
+- type: entity
+  parent: ClosetSteelBase
+  id: LivingStationJanitorialStockroom
+  name: janitorial stockroom cabinet
+  description: Cargo restocks this cabinet when it falls below 30 units of space cleaner or one trash bag. Close it after use.
+  components:
+  - type: CargoStockroom
+    department: Janitorial
+  - type: EntityTableContainerFill
+    containers:
+      entity_storage: !type:AllSelector
+        children:
+        - id: SprayBottleSpaceCleaner
+        - id: TrashBag
+
+- type: entity
+  parent: CrateGenericSteel
+  id: LivingStationEngineeringRestock
+  name: engineering stockroom refill
+
+- type: entity
+  parent: CratePlastic
+  id: LivingStationJanitorialRestock
+  name: janitorial stockroom refill
+
+- type: entity
+  parent: LivingStationCargoDropoff
+  id: LivingStationCargoOreIntake
+  name: ore intake pallet
+  description: Leave a closed, unlocked crate of mined ore here for Cargo to process. Iron needs coal to produce steel.
+  components:
+  - type: CargoDepartmentPallet
+    department: OreIntake
+
+- type: entity
+  parent: LivingStationCargoDropoff
+  id: LivingStationCargoOreProcessing
+  name: ore processor freight pallet
+  description: Cargo stages ore here to load the processor.
+  components:
+  - type: CargoDepartmentPallet
+    department: OreProcessing
+
+- type: entity
+  parent: LivingStationCargoDropoff
+  id: LivingStationCargoMaterials
+  name: refined materials pallet
+  description: Collect smelted materials here. Cargo uses this stock for Engineering and Science orders and surplus steel exports.
+  components:
+  - type: CargoDepartmentPallet
+    department: Materials
+
+- type: entity
+  parent: LivingStationCargoDropoff
+  id: LivingStationCargoScience
+  name: Science freight pallet
+  description: Receives refined glass. Leave a closed, empty crate here for Cargo to collect.
+  components:
+  - type: CargoDepartmentPallet
+    department: Science
+
+- type: entity
+  parent: CrateGenericSteel
+  id: LivingStationMinedSteel
+  name: refined steel crate
+
+- type: entity
+  parent: CrateGenericSteel
+  id: LivingStationMinedGlass
+  name: refined glass crate

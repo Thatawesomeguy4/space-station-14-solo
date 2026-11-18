@@ -97,26 +97,31 @@ public sealed partial class RepairableSystem : EntitySystem
 
     private void Repair(Entity<RepairableComponent> ent, ref InteractUsingEvent args)
     {
-        if (args.Handled)
-            return;
+        if (!args.Handled)
+            args.Handled = TryStartRepair(ent, args.User, args.Used, out _);
+    }
 
+    public bool TryStartRepair(Entity<RepairableComponent> ent, EntityUid user, EntityUid tool, out DoAfterId? id)
+    {
+        id = null;
         // Only try repair the target if it is damaged
         if (_damageableSystem.GetTotalDamage(ent.Owner) == 0)
-            return;
+            return false;
 
         float delay = ent.Comp.DoAfterDelay;
 
         // Add a penalty to how long it takes if the user is repairing itself
-        if (args.User == args.Target)
+        if (user == ent.Owner)
         {
             if (!ent.Comp.AllowSelfRepair)
-                return;
+                return false;
 
             delay *= ent.Comp.SelfRepairPenalty;
         }
 
         // Run the repairing doafter
-        args.Handled = _toolSystem.UseTool(args.Used, args.User, ent.Owner, delay, ent.Comp.QualityNeeded, new RepairDoAfterEvent(), ent.Comp.FuelCost);
+        return _toolSystem.UseTool(tool, user, ent.Owner, TimeSpan.FromSeconds(delay), [ent.Comp.QualityNeeded],
+            new RepairDoAfterEvent(), out id, ent.Comp.FuelCost);
     }
 }
 

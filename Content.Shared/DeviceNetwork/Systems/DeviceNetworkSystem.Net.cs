@@ -86,16 +86,22 @@ public sealed partial class DeviceNetworkSystem
     /// <summary>
     /// Generates a valid address by randomly generating one and checking if it already exists on the network.
     /// </summary>
-    private DeviceAddress GenerateValidAddressId(DeviceNet network)
-    {
-        DeviceAddress addressId;
-        do
-        {
-            // There is a 1 in 2 billion chance to roll a 0.
-            // Would be funny for this to stay as a super-gamble test fail, but I am evil no fun on my evil Space Station
-            addressId = _random.Next();
-        } while (network.Devices.ContainsKey(addressId) || addressId == DeviceAddress.Invalid);
+    private DeviceAddress GenerateValidAddressId(DeviceNet network) => GenerateValidAddressId(network, _random.Next);
 
+    internal static DeviceAddress GenerateValidAddressId(DeviceNet network, Func<int> next)
+    {
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            DeviceAddress candidate = next();
+            if (candidate != DeviceAddress.Invalid && !network.Devices.ContainsKey(candidate))
+                return candidate;
+        }
+
+        // Repeated invalid/colliding draws must not hang map initialization or a round restart.
+        // The first gap is found in at most network.Devices.Count + 1 probes.
+        DeviceAddress addressId = 1;
+        while (network.Devices.ContainsKey(addressId))
+            addressId = checked((int) addressId + 1);
         return addressId;
     }
 }

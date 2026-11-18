@@ -5,7 +5,7 @@ meta:
   forkId: ""
   forkVersion: ""
   time: 09/22/2026 18:21:07
-  entityCount: 11494
+  entityCount: 11502
 maps:
 - 658
 grids:
@@ -1691,6 +1691,9 @@ entities:
       - 9959
       - 9960
       - 9961
+    - type: EngineeringServicePoint
+      hullOffset: -1,1
+      approachOffset: -1,2
   - uid: 9978
     components:
     - type: Transform
@@ -3821,6 +3824,10 @@ entities:
     - type: Transform
       parent: 31
       pos: 43.5,10.5
+    - type: EngineeringServicePoint
+      cableOffset: 0,1
+      powerCheckOffset: 1,1
+      approachOffset: 0,1
   - uid: 7250
     components:
     - type: MetaData
@@ -44217,6 +44224,9 @@ entities:
       parent: 31
       rot: 1.5707963267948966 rad
       pos: 44.5,11.5
+    - type: Repairable
+    - type: Damageable
+      damageContainer: Inorganic
     - type: GasPressurePump
       targetPressure: 4500
   - uid: 11294
@@ -44946,6 +44956,9 @@ entities:
     - type: Transform
       parent: 31
       pos: 35.5,4.5
+    - type: Repairable
+    - type: Damageable
+      damageContainer: Inorganic
     - type: AtmosPipeColor
       color: '#990000FF'
   - uid: 2208
@@ -49817,7 +49830,9 @@ entities:
     - type: Transform
       parent: 31
       pos: 10.5,-8.5
-      rot: 3.141592653589793 rad
+      rot: -1.5707963267948966 rad
+    - type: CargoDepartmentPallet
+      approachOffsets: ["0,4", "0,3"]
 - proto: LivingStationCargoEngineering
   entities:
   - uid: 11492
@@ -49825,23 +49840,80 @@ entities:
     - type: Transform
       parent: 31
       pos: 28.5,5.5
-      rot: 3.141592653589793 rad
+      rot: 0 rad
 - proto: LivingStationCargoJanitorial
   entities:
   - uid: 11493
     components:
     - type: Transform
       parent: 31
-      pos: -18.5,-12.5
+      pos: -15.5,-12.5
       rot: 3.141592653589793 rad
+    - type: CargoDepartmentPallet
+      approachOffsets: ["19,17", "19,7", "19,2", "18,2", "16,2", "13,2", "8,2", "2,0"]
 - proto: LivingStationCargoReturns
   entities:
   - uid: 11494
     components:
     - type: Transform
       parent: 31
-      pos: 15.5,11.5
-      rot: 3.141592653589793 rad
+      pos: 16.5,11.5
+      rot: 1.5707963267948966 rad
+- proto: LivingStationCargoExport
+  entities:
+  - uid: 11495
+    components:
+    - type: Transform
+      parent: 31
+      pos: 18.5,11.5
+- proto: LivingStationEngineeringStockroom
+  entities:
+  - uid: 11496
+    components:
+    - type: Transform
+      parent: 31
+      anchored: true
+      pos: 27.5,4.5
+- proto: LivingStationCargoOreIntake
+  entities:
+  - uid: 11498
+    components:
+    - type: Transform
+      parent: 31
+      pos: 19.5,10.5
+- proto: LivingStationCargoOreProcessing
+  entities:
+  - uid: 11499
+    components:
+    - type: Transform
+      parent: 31
+      pos: 19.5,12.5
+      rot: 1.5707963267948966 rad
+- proto: LivingStationCargoMaterials
+  entities:
+  - uid: 11500
+    components:
+    - type: Transform
+      parent: 31
+      pos: 19.5,13.5
+- proto: LivingStationCargoScience
+  entities:
+  - uid: 11501
+    components:
+    - type: Transform
+      parent: 31
+      pos: -14.5,-17.5
+      rot: -1.5707963267948966 rad
+    - type: CargoDepartmentPallet
+      approachOffsets: ["18,22", "18,12", "18,1", "10,1", "1,1", "0,1"]
+- proto: LivingStationJanitorialStockroom
+  entities:
+  - uid: 11497
+    components:
+    - type: Transform
+      parent: 31
+      anchored: true
+      pos: -18.5,-12.5
 - proto: LivingStationMedicalTreatmentPoint
   entities:
   - uid: 11490
@@ -50590,6 +50662,11 @@ entities:
     - type: Transform
       parent: 31
       pos: 18.5,13.5
+    - type: CargoOreProcessor
+    - type: EngineeringServicePoint
+      cargoPower: true
+      approachOffset: 0,-1
+      approachWaypoints: ["9,-8", "-3,-8", "-3,-3", "-2,-2", "-1,-2", "0,-2"]
 - proto: OxygenCanister
   entities:
   - uid: 1089
@@ -59942,6 +60019,19 @@ entities:
     - type: Transform
       parent: 31
       pos: 15.852729,-6.338344
+- proto: ShelfChemistry
+  entities:
+  - uid: 11502
+    components:
+    - type: MetaData
+      name: Medbay medication shelf
+    - type: Transform
+      parent: 31
+      pos: 11.5,-8.5
+    - type: MedicalMedicationShelf
+    - type: Storage
+      grid:
+      - 0,0,7,7
 - proto: Table
   entities:
   - uid: 206

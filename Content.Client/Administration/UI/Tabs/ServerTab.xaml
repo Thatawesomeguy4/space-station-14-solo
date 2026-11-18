@@ -12,6 +12,9 @@
             <cc:CommandButton Name="SetDeadChatButton" Command="togglechat Dead" Text="{Loc server-dead-chat-toggle}" ToggleMode="True" />
         </GridContainer>
 
+        <Button Name="NpcStaffingButton" Text="{Loc living-station-staffing-title}" Visible="False"
+                HorizontalAlignment="Left" />
+
         <BoxContainer Orientation="Vertical">
             <Label Text="{Loc server-afk-timers}" />
             <BoxContainer Orientation="Horizontal" Margin="2">

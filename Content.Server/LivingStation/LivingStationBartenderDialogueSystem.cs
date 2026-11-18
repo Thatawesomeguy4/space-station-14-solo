@@ -45,7 +45,8 @@ public sealed partial class LivingStationBartenderDialogueSystem : EntitySystem
     private TimeSpan _nextRequest;
 
     private sealed record PendingReply(EntityUid Bartender, EntityUid Customer, NetUserId User, string Message, int Round,
-        long Started, CancellationTokenSource Cancellation, Task<BartenderReply> Reply);
+        long Started, CancellationTokenSource Cancellation, Task<BartenderReply> Reply,
+        DepartmentHeadContext? HeadContext = null, Func<DepartmentHeadContext>? ReadHeadContext = null);
 
     private bool Enabled => _config.GetCVar(CCVars.LivingStationEnabled) && _config.GetCVar(CCVars.LivingStationOllamaEnabled);
 
@@ -56,7 +57,33 @@ public sealed partial class LivingStationBartenderDialogueSystem : EntitySystem
         SubscribeLocalEvent<GameRunLevelChangedEvent>(OnRunLevelChanged);
         Subs.CVar(_config, CCVars.LivingStationEnabled, OnSettingChanged);
         Subs.CVar(_config, CCVars.LivingStationOllamaEnabled, OnSettingChanged);
+        InitializeNpcConversations();
     }
+
+    internal bool TryAskDepartmentHead(EntityUid speaker, EntityUid customer, string message,
+        Func<DepartmentHeadContext> readFacts)
+    {
+        if (!Enabled || _ticker.RunLevel != GameRunLevel.InRound || _pending != null || _timing.CurTime < _nextRequest ||
+            !TryComp<ActorComponent>(customer, out var actor) || !CanConverse(speaker, customer))
+            return false;
+
+        var facts = readFacts();
+        CancelNpcConversation();
+        var model = _config.GetCVar(CCVars.LivingStationOllamaModel);
+        var transport = Transport;
+        var started = Stopwatch.GetTimestamp();
+        var cancellation = new CancellationTokenSource(OllamaBartenderClient.Deadline);
+        var token = cancellation.Token;
+        var reply = Task.Run(() => transport.AskDepartmentHeadAsync(model, message, facts, token));
+        _pending = new(speaker, customer, actor.PlayerSession.UserId, message, _ticker.RoundId, started,
+            cancellation, reply, facts, readFacts);
+        _nextRequest = _timing.CurTime + Cooldown;
+        return true;
+    }
+
+    internal string EngineeringFallback(ChiefEngineerContext facts) =>
+        Loc.GetString(facts.WorkAssigned ? "living-station-engineer-dialogue-busy" : "living-station-engineer-dialogue-idle",
+            ("fixture", facts.FixtureStatus));
 
     private void OnPlayerSpawnComplete(PlayerSpawnCompleteEvent ev)
     {
@@ -83,6 +110,7 @@ public sealed partial class LivingStationBartenderDialogueSystem : EntitySystem
             if (counter.Bartender is not { } bartender || !CanConverse(bartender, customer))
                 continue;
 
+            CancelNpcConversation();
             var model = _config.GetCVar(CCVars.LivingStationOllamaModel);
             var user = actor.PlayerSession.UserId;
             var history = _history.TryGetValue((customer, user), out var previous) ? previous.ToArray() : [];
@@ -157,6 +185,7 @@ public sealed partial class LivingStationBartenderDialogueSystem : EntitySystem
 
     public override void Update(float frameTime)
     {
+        UpdateNpcConversations();
         if (_pending is not { } pending || !pending.Reply.IsCompleted)
             return;
 
@@ -171,6 +200,17 @@ public sealed partial class LivingStationBartenderDialogueSystem : EntitySystem
         if (Stopwatch.GetElapsedTime(pending.Started) >= OllamaBartenderClient.Deadline)
             reply = new(BartenderReplyKind.TimedOut);
 
+        if (pending.ReadHeadContext is { } readFacts)
+        {
+            var current = readFacts();
+            Log.Debug($"Living Station {current.Role} reply {reply.Kind} in round {pending.Round}.");
+            var headSpeech = reply.Kind == BartenderReplyKind.Speak && current == pending.HeadContext
+                ? reply.Speech!
+                : current.Fallback;
+            Speak(pending.Bartender, headSpeech);
+            return;
+        }
+
         Log.Debug($"Living Station bartender reply {reply.Kind} in round {pending.Round}.");
         if (reply.Kind == BartenderReplyKind.NoAction)
             return;
@@ -183,10 +223,13 @@ public sealed partial class LivingStationBartenderDialogueSystem : EntitySystem
             BartenderReplyKind.NoteUnavailable => Loc.GetString("living-station-bar-memory-unavailable"),
             _ => reply.Speech ?? Loc.GetString("living-station-bar-dialogue-fallback"),
         };
-        _chat.TrySendInGameICMessage(pending.Bartender, speech, InGameICChatType.Speak, ChatTransmitRange.Normal,
-            hideLog: true, checkRadioPrefix: false);
+        Speak(pending.Bartender, speech);
         Remember((pending.Customer, pending.User), new(pending.Message, speech));
     }
+
+    private void Speak(EntityUid speaker, string speech) =>
+        _chat.TrySendInGameICMessage(speaker, speech, InGameICChatType.Speak, ChatTransmitRange.Normal,
+            hideLog: true, checkRadioPrefix: false);
 
     private bool CanConverse(EntityUid bartender, EntityUid customer) =>
         bartender != customer && !HasComp<ActorComponent>(bartender) && HasComp<ActorComponent>(customer) &&
@@ -238,6 +281,9 @@ public sealed partial class LivingStationBartenderDialogueSystem : EntitySystem
 
     private void Reset()
     {
+        CancelNpcConversation();
+        _nextNpcConversation = TimeSpan.Zero;
+        _nextNpcConversationCheck = TimeSpan.Zero;
         if (_pending is { } pending)
         {
             pending.Cancellation.Cancel();

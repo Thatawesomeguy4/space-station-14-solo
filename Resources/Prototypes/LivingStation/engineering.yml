@@ -10,12 +10,23 @@
     roleLoadout: [JobStationEngineer]
   - type: NpcFactionMember
     factions: [NanoTrasen]
+  - type: Access
+    tags: [Engineering, ChiefEngineer, Maintenance, Atmospherics, Cargo]
+  - type: LivingStationEngineer
+  - type: HTN
+    enabled: false
+    rootTask:
+      task: IdleCompound
+    blackboard:
+      NavInteract: !type:Bool
+        true
 
 - type: startingGear
   parent: StationEngineerGear
   id: LivingStationEngineerGear
   inhand:
   - LightReplacerFilled
+  - WelderIndustrial
 
 - type: entity
   parent: MobLivingStationEngineer
@@ -31,8 +42,18 @@
   id: LivingStationChiefEngineerGear
   equipment:
     ears: LivingStationChiefEngineerHeadset
+    back: ClothingBackpackEngineering
+    outerClothing: ClothingOuterHardsuitEngineeringWhite
+    head: ClothingHeadHelmetHardsuitEngineeringWhite
+    mask: ClothingMaskBreath
+    suitstorage: OxygenTankFilled
+  storage:
+    back:
+    - CableApcStack10
+    - FloorTileItemSteel
   inhand:
   - LightReplacerFilled
+  - WelderIndustrial
 
 - type: entity
   parent: ClothingHeadsetCE

@@ -20,6 +20,22 @@
   - Ointment
 
 - type: entity
+  parent: MobLivingStationMedic
+  id: MobLivingStationChiefMedicalOfficer
+  name: chief medical officer
+  components:
+  - type: Loadout
+    prototypes: [LivingStationChiefMedicalOfficerGear]
+    roleLoadout: [JobChiefMedicalOfficer]
+
+- type: startingGear
+  parent: CMOGear
+  id: LivingStationChiefMedicalOfficerGear
+  inhand:
+  - Brutepack
+  - Ointment
+
+- type: entity
   parent: MobCivilian
   id: MobLivingStationPatient
   name: Medbay patient
@@ -39,7 +55,7 @@
   parent: CrateGenericSteel
   id: LivingStationMedicalChemistryKit
   name: Medbay chemical supply crate
-  description: Reagents and clean beakers for the station medic. Bring it to Medbay after cargo delivers it.
+  description: Reagents and clean beakers for the station medic.
   components:
   - type: MedicalChemistryKit
   - type: EntityStorage

@@ -67,8 +67,10 @@ public sealed partial class LivingStationMedicalSystem : EntitySystem
         SubscribeLocalEvent<GameRunLevelChangedEvent>(OnRunLevelChanged);
     }
 
-    internal void StartTreatment(MapId mapId)
+    internal int StartTreatment(MapId mapId, int count)
     {
+        if (count == 0)
+            return 0;
         var markers = EntityQueryEnumerator<MedicalTreatmentPointComponent, TransformComponent>();
         while (markers.MoveNext(out var marker, out var point, out var transform))
         {
@@ -77,18 +79,27 @@ public sealed partial class LivingStationMedicalSystem : EntitySystem
 
             var patient = SpawnAttachedTo(Patient, transform.Coordinates);
             _damage.TryChangeDamage(patient, new DamageSpecifier(_prototypes.Index(Blunt), 4), ignoreResistances: true);
-            var worker = SpawnAttachedTo(Medic, transform.Coordinates.Offset(point.WorkerOffset));
+            var origin = transform.Coordinates.Offset(point.WorkerOffset);
+            var worker = SpawnAttachedTo("MobLivingStationChiefMedicalOfficer", origin);
             var medic = Comp<LivingStationMedicComponent>(worker);
             medic.TreatmentPoint = transform.Coordinates;
             if (!TryAssignTreatment((worker, medic), patient))
             {
                 QueueDel(patient);
                 QueueDel(worker);
-                return;
+                return 0;
             }
 
-            return;
+            var support = new List<EntityUid>();
+            var staffing = EntityManager.System<LivingStationSystem>();
+            staffing.RegisterCrew(worker, LivingStationDepartment.Medical);
+            EntityManager.System<LivingStationIncidentSystem>().RegisterDepartmentHead("Chief Medical Officer", worker);
+            staffing.SpawnSupportCrew(LivingStationDepartment.Medical, Medic, origin, count - 1, support);
+            foreach (var uid in support)
+                Comp<LivingStationMedicComponent>(uid).TreatmentPoint = transform.Coordinates;
+            return 1 + support.Count;
         }
+        return 0;
     }
 
     private void OnGetTreatmentVerbs(Entity<LivingStationMedicComponent> medic, ref GetVerbsEvent<Verb> args)
@@ -129,7 +140,7 @@ public sealed partial class LivingStationMedicalSystem : EntitySystem
             return false;
 
         if (FindMedicine(medic, patient) is not { } medicine ||
-            !_work.TryAssign(medic, new EntityCoordinates(patient, Vector2.Zero), TreatmentTimeout))
+            !_work.TryAssign(medic, new EntityCoordinates(patient, Vector2.Zero), TreatmentTimeout, patient))
             return false;
 
         var treatment = AddComp<MedicalTreatmentComponent>(medic);
@@ -161,7 +172,7 @@ public sealed partial class LivingStationMedicalSystem : EntitySystem
             var damage = GetTreatableDamage(patient, treatment.HealingProfile);
             if (damage <= FixedPoint2.Zero)
             {
-                Finish(worker, "completed, patient no longer has damage this medicine can treat");
+                Finish(worker, "completed, patient no longer has damage this medicine can treat", success: true);
                 continue;
             }
 
@@ -175,7 +186,7 @@ public sealed partial class LivingStationMedicalSystem : EntitySystem
             {
                 var status = _doAfter.GetStatus(application);
                 if (status == DoAfterStatus.Finished && damage < treatment.DamageAtApplication)
-                    Finish(worker, "completed, treatment was applied");
+                    Finish(worker, "completed, treatment was applied", success: true);
                 else if (status != DoAfterStatus.Running)
                     Finish(worker, "ended without reducing the patient's injury");
                 continue;
@@ -253,8 +264,9 @@ public sealed partial class LivingStationMedicalSystem : EntitySystem
         return total;
     }
 
-    private void Finish(EntityUid worker, string outcome)
+    private void Finish(EntityUid worker, string outcome, bool success = false)
     {
+        _work.RecordOutcome(worker, outcome, success);
         Log.Info($"Living Station medical treatment {outcome} for {ToPrettyString(worker)}.");
         RemComp<MedicalTreatmentComponent>(worker);
     }

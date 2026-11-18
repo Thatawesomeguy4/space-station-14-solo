@@ -1,4 +1,5 @@
 using System.Numerics;
+using Content.Shared.CCVar;
 using Content.Server.NPC.Components;
 using Content.Server.NPC.Pathfinding;
 using Content.Server.NPC.Systems;
@@ -21,6 +22,7 @@ namespace Content.Server.LivingStation;
 public sealed partial class LivingStationEngineeringSystem : EntitySystem
 {
     private static readonly EntProtoId Engineer = "MobLivingStationChiefEngineer";
+    private static readonly EntProtoId SupportEngineer = "MobLivingStationEngineer";
     internal static readonly TimeSpan RepairTimeout = TimeSpan.FromSeconds(20);
     private const float ApproachRange = 0.35f;
 
@@ -39,15 +41,19 @@ public sealed partial class LivingStationEngineeringSystem : EntitySystem
 
     internal EntityUid? ChiefEngineer { get; private set; }
     internal EntityUid? Fixture { get; private set; }
+    private readonly List<EntityUid> _engineers = new();
 
     public override void Initialize()
     {
         SubscribeLocalEvent<EngineeringRepairComponent, ComponentShutdown>(OnRepairShutdown);
         SubscribeLocalEvent<GameRunLevelChangedEvent>(OnRunLevelChanged);
+        InitializeMaintenance();
     }
 
-    internal void StartShift(MapId mapId)
+    internal int StartShift(MapId mapId, int count)
     {
+        if (count == 0)
+            return 0;
         var fixtures = EntityQueryEnumerator<EngineeringRepairFixtureComponent, PoweredLightComponent, TransformComponent>();
         while (fixtures.MoveNext(out var fixture, out var marker, out var light, out var transform))
         {
@@ -57,10 +63,15 @@ public sealed partial class LivingStationEngineeringSystem : EntitySystem
 
             var worker = SpawnAttachedTo(Engineer, transform.Coordinates.Offset(marker.WorkerOffset));
             ChiefEngineer = worker;
+            _engineers.Add(worker);
             Fixture = fixture;
             _incidents.RegisterChiefEngineer(worker, fixture);
-            return;
+            var staffing = EntityManager.System<LivingStationSystem>();
+            staffing.RegisterCrew(worker, LivingStationDepartment.Engineering);
+            return 1 + staffing.SpawnSupportCrew(LivingStationDepartment.Engineering, SupportEngineer,
+                transform.Coordinates.Offset(marker.WorkerOffset), count - 1, _engineers);
         }
+        return 0;
     }
 
     internal bool TryStartRepair()
@@ -77,37 +88,49 @@ public sealed partial class LivingStationEngineeringSystem : EntitySystem
         _bulbs.SetState(bulb.Owner, LightBulbState.Burned);
         _lights.SetState(fixture, light.On, light);
         _incidents.BeginLightIncident();
-        AddComp<EngineeringRepairComponent>(worker);
+        AddComp<EngineeringRepairComponent>(worker).Incident = true;
         EnsureComp<ActiveNPCComponent>(worker);
         return true;
     }
 
     internal void EndRepair()
     {
-        if (ChiefEngineer is { } worker)
+        if (ChiefEngineer is { } worker && TryComp(worker, out EngineeringRepairComponent? repair) && repair.Incident)
             RemComp<EngineeringRepairComponent>(worker);
     }
 
     public override void Update(float frameTime)
     {
         var repairs = EntityQueryEnumerator<EngineeringRepairComponent, TransformComponent>();
-        while (repairs.MoveNext(out var worker, out _, out var transform))
+        while (repairs.MoveNext(out var worker, out var repair, out var transform))
         {
             if (!TryComp(worker, out LivingStationWorkClaimComponent? claim) ||
                 !_mobState.IsAlive(worker) || HasComp<ActorComponent>(worker) ||
-                !TryComp(claim.Target.EntityId, out EngineeringRepairFixtureComponent? marker) ||
-                !TryComp(claim.Target.EntityId, out PoweredLightComponent? light) ||
                 !TryComp(claim.Target.EntityId, out TransformComponent? fixtureTransform) ||
                 transform.GridUid == null || transform.GridUid != fixtureTransform.GridUid)
             {
-                Finish(worker, "cancelled because the worker or fixture is unavailable");
+                if (!repair.Incident && TryComp(worker, out LivingStationWorkClaimComponent? interrupted))
+                    CompleteWork(worker, interrupted.Target.EntityId, "living-station-engineering-work-unavailable");
+                else
+                    Finish(worker, "cancelled because the worker or fixture is unavailable");
                 continue;
             }
 
             var fixture = claim.Target.EntityId;
+            if (!repair.Incident)
+            {
+                UpdateMaintenance(worker, repair, fixture, fixtureTransform, claim);
+                continue;
+            }
+
+            if (!TryComp(fixture, out EngineeringRepairFixtureComponent? marker) || !TryComp(fixture, out PoweredLightComponent? light))
+            {
+                Finish(worker, "cancelled because the incident fixture is unavailable");
+                continue;
+            }
             if (light.CurrentLit)
             {
-                Finish(worker, "completed, fixture lit");
+                Finish(worker, "completed, fixture lit", success: true);
                 continue;
             }
 
@@ -137,7 +160,8 @@ public sealed partial class LivingStationEngineeringSystem : EntitySystem
                 _steering.Unregister(worker);
                 if (bulb?.State is LightBulbState.Burned or LightBulbState.Broken)
                     _incidents.ObserveBrokenLight(worker, fixture);
-                _interaction.UserInteraction(worker, fixtureTransform.Coordinates, fixture);
+                if (FindHeldTool<LightReplacerComponent>(worker) is { } replacer)
+                    _interaction.InteractUsing(worker, replacer, fixture, fixtureTransform.Coordinates);
                 if (!TryComp(_lights.GetBulb(fixture, light), out bulb) || bulb.State != LightBulbState.Normal)
                     Finish(worker, "failed to replace the bulb");
                 continue;
@@ -153,26 +177,32 @@ public sealed partial class LivingStationEngineeringSystem : EntitySystem
                 _steering.Register(worker, approach).Range = ApproachRange;
             }
         }
+
+        DispatchMaintenance();
+        SendPersonalUpdates();
     }
 
     private bool HasReplacement(EntityUid worker, LightBulbType type)
     {
-        if (!_hands.TryGetActiveItem(worker, out var held) || !TryComp(held, out LightReplacerComponent? tool) ||
-            !_provider.TryGetEntityCounter(held.Value, out var stock))
+        if (FindHeldTool<LightReplacerComponent>(worker) is not { } held ||
+            !_provider.TryGetEntityCounter(held, out var stock))
             return false;
 
+        var tool = Comp<LightReplacerComponent>(held);
         var replacement = type == LightBulbType.Tube ? tool.ActiveLightTube : tool.ActiveLightBulb;
         return stock.TryGetValue(replacement, out var count) && count > 0;
     }
 
-    private void Finish(EntityUid worker, string outcome)
+    private void Finish(EntityUid worker, string outcome, bool success = false)
     {
+        _work.RecordOutcome(worker, outcome, success);
         Log.Info($"Living Station engineering repair {outcome} for {ToPrettyString(worker)}.");
         RemComp<EngineeringRepairComponent>(worker);
     }
 
     private void OnRepairShutdown(EntityUid worker, EngineeringRepairComponent repair, ComponentShutdown args)
     {
+        StopMaintenance(worker, repair);
         _work.Release(worker);
         _steering.Unregister(worker);
         RemComp<ActiveNPCComponent>(worker);
@@ -187,6 +217,14 @@ public sealed partial class LivingStationEngineeringSystem : EntitySystem
         while (repairs.MoveNext(out var worker, out _))
             RemComp<EngineeringRepairComponent>(worker);
         ChiefEngineer = null;
+        _engineers.Clear();
         Fixture = null;
+        _maintenanceRequests.Clear();
+        _recentRepairs.Clear();
+        _repairUpdates.Clear();
+        _nextPersonalUpdate.Clear();
+        _retryMaintenance.Clear();
+        _nextMaintenance = TimeSpan.Zero;
+        _lastWorkResult = null;
     }
 }

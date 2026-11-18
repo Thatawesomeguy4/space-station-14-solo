@@ -19,6 +19,7 @@ namespace Content.Server.LivingStation;
 public sealed partial class LivingStationSecuritySystem : EntitySystem
 {
     private static readonly EntProtoId OfficerPrototype = "MobLivingStationHeadOfSecurity";
+    private static readonly EntProtoId SupportOfficer = "MobLivingStationSecurityOfficer";
     private static readonly TimeSpan InvestigationTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan PatrolPause = TimeSpan.FromSeconds(1);
     private const float ArrivalRange = 0.4f;
@@ -41,8 +42,10 @@ public sealed partial class LivingStationSecuritySystem : EntitySystem
         SubscribeLocalEvent<GameRunLevelChangedEvent>(OnRunLevelChanged);
     }
 
-    internal void StartPatrol(MapId mapId)
+    internal int StartPatrol(MapId mapId, int count)
     {
+        if (count == 0)
+            return 0;
         var points = new List<(int Order, EntityUid Marker)>();
         var markers = EntityQueryEnumerator<SecurityPatrolPointComponent, TransformComponent>();
         while (markers.MoveNext(out var uid, out var point, out var transform))
@@ -52,7 +55,7 @@ public sealed partial class LivingStationSecuritySystem : EntitySystem
         }
 
         if (points.Count < 2)
-            return;
+            return 0;
 
         points.Sort();
         var start = Transform(points[0].Marker);
@@ -64,13 +67,24 @@ public sealed partial class LivingStationSecuritySystem : EntitySystem
         }
 
         if (route.Count < 2)
-            return;
+            return 0;
 
         var worker = SpawnAttachedTo(OfficerPrototype, start.Coordinates);
         var patrol = AddComp<SecurityPatrolComponent>(worker);
         patrol.Waypoints = route;
         patrol.NextWaypoint = 1;
         _incidents.RegisterHeadOfSecurity(worker);
+        var support = new List<EntityUid>();
+        var staffing = EntityManager.System<LivingStationSystem>();
+        staffing.RegisterCrew(worker, LivingStationDepartment.Security);
+        staffing.SpawnSupportCrew(LivingStationDepartment.Security, SupportOfficer, start.Coordinates, count - 1, support);
+        for (var i = 0; i < support.Count; i++)
+        {
+            var backup = AddComp<SecurityPatrolComponent>(support[i]);
+            backup.Waypoints = route;
+            backup.NextWaypoint = (i + 1) % route.Count;
+        }
+        return 1 + support.Count;
     }
 
     public bool TryReport(EntityUid reporter)
@@ -89,7 +103,7 @@ public sealed partial class LivingStationSecuritySystem : EntitySystem
         while (officers.MoveNext(out var officer, out _, out var transform))
         {
             if (transform.GridUid != grid || !_mobState.IsAlive(officer) || HasComp<ActorComponent>(officer) ||
-                !_work.TryAssign(officer, target, InvestigationTimeout))
+                !_work.TryAssign(officer, target, InvestigationTimeout, reporter))
                 continue;
 
             _steering.Unregister(officer);
@@ -122,7 +136,7 @@ public sealed partial class LivingStationSecuritySystem : EntitySystem
                 else if (Reached(officer, transform, claim.Target))
                 {
                     patrol.LastInspected = claim.Target;
-                    FinishInvestigation(officer, $"inspected {claim.Target}");
+                    FinishInvestigation(officer, $"inspected {claim.Target}", success: true);
                 }
                 else
                     WalkTo(officer, transform.Coordinates, claim.Target, steering);
@@ -157,8 +171,9 @@ public sealed partial class LivingStationSecuritySystem : EntitySystem
             _steering.Register(officer, target).Range = ArrivalRange;
     }
 
-    private void FinishInvestigation(EntityUid officer, string outcome)
+    private void FinishInvestigation(EntityUid officer, string outcome, bool success = false)
     {
+        _work.RecordOutcome(officer, outcome, success);
         _work.Release(officer);
         _steering.Unregister(officer);
         Log.Info($"Living Station security {outcome} for {ToPrettyString(officer)}.");

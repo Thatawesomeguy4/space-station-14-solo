@@ -6,6 +6,7 @@ using Content.Shared.Maps;
 using Content.Shared.Power.Components;
 using Content.Shared.Stacks;
 using Content.Shared.Whitelist;
+using Robust.Shared.Map;
 using Robust.Shared.Map.Components;
 
 namespace Content.Server.Power.EntitySystems;
@@ -27,32 +28,36 @@ public sealed partial class CableSystem
         if (args.Handled || !args.CanReach)
             return;
 
-        var component = placer.Comp;
-        if (!TryComp<MapGridComponent>(_transform.GetGrid(args.ClickLocation), out var grid))
-            return;
+        args.Handled = TryPlaceCable(placer, args.User, args.ClickLocation);
+    }
 
-        var gridUid = _transform.GetGrid(args.ClickLocation)!.Value;
-        var snapPos = _map.TileIndicesFor((gridUid, grid), args.ClickLocation);
+    public bool TryPlaceCable(Entity<CablePlacerComponent> placer, EntityUid user, EntityCoordinates location)
+    {
+        var component = placer.Comp;
+        if (_transform.GetGrid(location) is not { } gridUid || !TryComp<MapGridComponent>(gridUid, out var grid))
+            return false;
+
+        var snapPos = _map.TileIndicesFor((gridUid, grid), location);
         var tileDef = (ContentTileDefinition)_tileManager[_map.GetTileRef(gridUid, grid, snapPos).Tile.TypeId];
 
         if ((!component.OverTile && !tileDef.IsSubFloor) || !tileDef.Sturdy)
-            return;
+            return false;
 
         foreach (var anchored in _map.GetAnchoredEntities((gridUid, grid), snapPos))
         {
             if (_whitelistSystem.IsWhitelistPass(component.Blacklist, anchored))
-                return;
+                return false;
 
             if (TryComp<CableComponent>(anchored, out var wire) && wire.CableType == component.BlockingCableType)
-                return;
+                return false;
         }
 
         if (TryComp<StackComponent>(placer, out var stack) && !_stack.TryUse((placer.Owner, stack), 1))
-            return;
+            return false;
 
         var newCable = SpawnAtPosition(component.CablePrototypeId, _map.GridTileToLocal(gridUid, grid, snapPos));
         _adminLogger.Add(LogType.Construction, LogImpact.Low,
-            $"{ToPrettyString(args.User):player} placed {ToPrettyString(newCable):cable} at {Transform(newCable).Coordinates}");
-        args.Handled = true;
+            $"{ToPrettyString(user):player} placed {ToPrettyString(newCable):cable} at {Transform(newCable).Coordinates}");
+        return true;
     }
 }

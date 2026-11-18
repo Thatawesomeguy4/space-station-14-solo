@@ -1,11 +1,15 @@
 using System.Linq;
 using System.Numerics;
+using Content.Server.Chat.Systems;
 using Content.Server.GameTicking;
 using Content.Server.NPC.Components;
 using Content.Server.NPC.Pathfinding;
 using Content.Server.NPC.Systems;
 using Content.Shared.ActionBlocker;
 using Content.Shared.CCVar;
+using Content.Shared.Chat;
+using Content.Shared.Doors.Components;
+using Content.Shared.Doors.Systems;
 using Content.Shared.GameTicking;
 using Content.Shared.Interaction;
 using Content.Shared.Mobs.Systems;
@@ -21,6 +25,7 @@ using Robust.Shared.Configuration;
 using Robust.Shared.Map;
 using Robust.Shared.Map.Components;
 using Robust.Shared.Player;
+using Robust.Shared.Physics.Systems;
 using Robust.Shared.Prototypes;
 using Robust.Shared.Timing;
 
@@ -35,13 +40,17 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
     private static readonly EntProtoId MedicalSupplies = "CrateMedicalSupplies";
     private static readonly EntProtoId ElectricalSupplies = "CrateEngineeringElectricalSupplies";
     private static readonly EntProtoId JanitorialSupplies = "CrateJanitorialSupplies";
-    private static readonly (EntProtoId Product, string Verb)[] RequisitionCatalog =
+    private static readonly EntProtoId MinedSteel = "LivingStationMinedSteel";
+    private static readonly EntProtoId MinedGlass = "LivingStationMinedGlass";
+    private static readonly (EntProtoId Product, string Verb, int Cost)[] RequisitionCatalog =
     [
-        (MedicalSupplies, "living-station-cargo-order-medical"),
-        (ElectricalSupplies, "living-station-cargo-order-electrical"),
-        ("CrateMaterialSteel", "living-station-cargo-order-steel"),
-        ("CrateMaterialGlass", "living-station-cargo-order-glass"),
-        (JanitorialSupplies, "living-station-cargo-order-janitorial"),
+        (MedicalSupplies, "living-station-cargo-order-medical", 900),
+        (ElectricalSupplies, "living-station-cargo-order-electrical", 1200),
+        ("CrateMaterialSteel", "living-station-cargo-order-steel", 1500),
+        ("CrateMaterialGlass", "living-station-cargo-order-glass", 1500),
+        (JanitorialSupplies, "living-station-cargo-order-janitorial", 800),
+        (MinedSteel, "living-station-cargo-order-mined-steel", 0),
+        (MinedGlass, "living-station-cargo-order-mined-glass", 0),
     ];
     private const int QueueLimit = 8;
     private static readonly TimeSpan DeliveryTimeout = TimeSpan.FromSeconds(20);
@@ -53,7 +62,11 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
     [Dependency] private IConfigurationManager _config = default!;
     [Dependency] private ServerGameTicker _ticker = default!;
     [Dependency] private ActionBlockerSystem _blocker = default!;
+    [Dependency] private ChatSystem _chat = default!;
     [Dependency] private EntityLookupSystem _lookup = default!;
+    [Dependency] private SharedDoorSystem _doors = default!;
+    [Dependency] private SharedPhysicsSystem _physics = default!;
+    [Dependency] private SharedTransformSystem _transform = default!;
     [Dependency] private MobStateSystem _mobState = default!;
     [Dependency] private NPCSteeringSystem _steering = default!;
     [Dependency] private PathfindingSystem _pathfinding = default!;
@@ -67,12 +80,15 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
     public override void Initialize()
     {
         SubscribeLocalEvent<CargoDeliveryPickupComponent, GetVerbsEvent<Verb>>(OnGetDeliveryVerbs);
+        InitializeCargoLogistics();
         SubscribeLocalEvent<CargoDeliveryComponent, ComponentShutdown>(OnDeliveryShutdown);
         SubscribeLocalEvent<GameRunLevelChangedEvent>(OnRunLevelChanged);
     }
 
-    internal void StartDelivery(MapId mapId)
+    internal int StartDelivery(MapId mapId, int count)
     {
+        if (count == 0)
+            return 0;
         var markers = EntityQueryEnumerator<MetaDataComponent, TransformComponent>();
         EntityUid? pickup = null;
         EntityUid? dropoff = null;
@@ -88,32 +104,37 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
         }
 
         if (pickup is not { } pickupUid || dropoff is not { } dropoffUid)
-            return;
+            return 0;
 
         var pickupTransform = Transform(pickupUid);
         var dropoffTransform = Transform(dropoffUid);
         if (pickupTransform.GridUid is not { } grid || dropoffTransform.GridUid != grid ||
             _station.GetOwningStation(pickupUid, pickupTransform) == null)
-            return;
+            return 0;
 
         var workerOffset = pickupTransform.LocalRotation.RotateVec(Vector2.UnitX);
-        var worker = SpawnAttachedTo(WorkerPrototype, pickupTransform.Coordinates.Offset(workerOffset));
+        var worker = SpawnAttachedTo("MobLivingStationQuartermaster", pickupTransform.Coordinates.Offset(workerOffset));
         var crate = SpawnAttachedTo(CratePrototype, pickupTransform.Coordinates);
         if (!TryAssignDelivery(worker, crate, dropoffUid))
         {
             QueueDel(crate);
             QueueDel(worker);
-            return;
+            return 0;
         }
 
         var stationPickup = Comp<CargoDeliveryPickupComponent>(pickupUid);
-        stationPickup.Worker = worker;
         stationPickup.Dropoff = dropoffUid;
+        stationPickup.Workers.Add(worker);
+        var staffing = EntityManager.System<LivingStationSystem>();
+        staffing.RegisterCrew(worker, LivingStationDepartment.Cargo);
+        EntityManager.System<LivingStationIncidentSystem>().RegisterDepartmentHead("Quartermaster", worker);
+        return 1 + staffing.SpawnSupportCrew(LivingStationDepartment.Cargo, WorkerPrototype,
+            pickupTransform.Coordinates.Offset(workerOffset), count - 1, stationPickup.Workers);
     }
 
     private void OnGetDeliveryVerbs(Entity<CargoDeliveryPickupComponent> pickup, ref GetVerbsEvent<Verb> args)
     {
-        if (!args.CanAccess || !args.CanInteract || !Enabled || pickup.Comp.Worker == null)
+        if (!args.CanAccess || !args.CanInteract || !Enabled || pickup.Comp.Workers.Count == 0)
             return;
 
         var requester = args.User;
@@ -124,7 +145,7 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
                 : "living-station-cargo-enable-auto"),
             Act = () =>
             {
-                if (CanUsePickup(pickup, requester))
+                if (CanUseCargoTerminal(pickup, requester))
                     pickup.Comp.AutomaticHauling = !pickup.Comp.AutomaticHauling;
             },
         });
@@ -136,72 +157,86 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
                 Text = Loc.GetString("living-station-cargo-request-delivery"),
                 Act = () =>
                 {
-                    if (CanUsePickup(pickup, requester) &&
-                        FindDeliveryCrate(pickup) is { } crate && pickup.Comp.Worker is { } worker)
+                    if (CanUseCargoTerminal(pickup, requester) &&
+                        FindDeliveryCrate(pickup) is { } crate && TryGetDispatchRoute(pickup, out _, out _, out var worker))
                         TryAssignDelivery(worker, crate, pickup.Comp.Dropoff);
                 },
             });
         }
 
-        foreach (var (product, label) in RequisitionCatalog)
+        AddRequisitionVerbs(pickup, pickup, requester, args.Verbs);
+    }
+
+    private void AddRequisitionVerbs(Entity<CargoDeliveryPickupComponent> pickup, EntityUid terminal, EntityUid requester,
+        SortedSet<Verb> verbs)
+    {
+        foreach (var (product, label, cost) in RequisitionCatalog)
         {
-            args.Verbs.Add(new Verb
+            if (GetRequestedMaterial(product) != null && (Transform(pickup).GridUid is not { } grid ||
+                FindDepartmentPallet(grid, CargoDepartment.Materials) == null))
+                continue;
+
+            verbs.Add(new Verb
             {
                 Text = Loc.GetString(label),
+                Message = Loc.GetString("living-station-cargo-order-cost", ("cost", cost)),
                 Act = () =>
                 {
-                    if (!CanUsePickup(pickup, requester))
+                    if (TerminatingOrDeleted(pickup) || !CanUseCargoTerminal(terminal, requester))
                         return;
 
                     var accepted = TryQueueRequisition(pickup, requester, product);
                     _popup.PopupEntity(Loc.GetString(accepted
                         ? "living-station-cargo-order-queued"
-                        : "living-station-cargo-order-unavailable"), pickup, requester);
+                        : "living-station-cargo-order-unavailable"), terminal, requester);
                 },
             });
         }
 
-        args.Verbs.Add(new Verb
+        verbs.Add(new Verb
         {
             Text = Loc.GetString("living-station-cargo-check-queue"),
             Act = () =>
             {
-                if (!CanUsePickup(pickup, requester))
+                if (TerminatingOrDeleted(pickup) || !CanUseCargoTerminal(terminal, requester))
                     return;
 
                 var pending = pickup.Comp.Requisitions;
                 var status = pending.Count == 0
                     ? Loc.GetString("living-station-cargo-queue-empty")
-                    : Loc.GetString("living-station-cargo-queue-status", ("count", pending.Count),
-                        ("next", ProtoMan.Index(pending[0].Product).Name));
-                if (TryComp(pickup.Comp.Worker, out CargoDeliveryComponent? active) && EntityManager.EntityExists(active.Crate))
-                    status = Loc.GetString("living-station-cargo-queue-active", ("crate", Name(active.Crate)), ("status", status));
-                _popup.PopupEntity(status, pickup, requester);
+                    : Loc.GetString("living-station-cargo-queue-status", ("orders", string.Join(", ", pending.Select(DescribeRequisition))));
+                foreach (var worker in pickup.Comp.Workers)
+                {
+                    if (TryComp(worker, out CargoDeliveryComponent? active) && Exists(active.Crate) && Exists(active.Dropoff))
+                        status = Loc.GetString("living-station-cargo-queue-active", ("crate", Name(active.Crate)),
+                            ("destination", Name(active.Dropoff)), ("status", status));
+                }
+                var balance = GetCargoBalance(_station.GetOwningStation(terminal));
+                status = Loc.GetString("living-station-cargo-queue-balance", ("balance", balance), ("status", status));
+                if (pickup.Comp.OreIssue is { } issue)
+                    status += " " + Loc.GetString(issue);
+                _popup.PopupEntity(status, terminal, requester);
             },
         });
 
         if (!pickup.Comp.Requisitions.Any(order => order.Requester == requester))
             return;
 
-        args.Verbs.Add(new Verb
+        verbs.Add(new Verb
         {
             Text = Loc.GetString("living-station-cargo-cancel-orders"),
             Act = () =>
             {
-                if (!CanUsePickup(pickup, requester))
+                if (TerminatingOrDeleted(pickup) || !CanUseCargoTerminal(terminal, requester))
                     return;
 
                 var count = pickup.Comp.Requisitions.RemoveAll(order => order.Requester == requester);
-                _popup.PopupEntity(Loc.GetString("living-station-cargo-orders-cancelled", ("count", count)), pickup, requester);
+                _popup.PopupEntity(Loc.GetString("living-station-cargo-orders-cancelled", ("count", count)), terminal, requester);
             },
         });
     }
 
     private bool Enabled => _ticker.RunLevel == GameRunLevel.InRound && _config.GetCVar(CCVars.LivingStationEnabled);
-
-    private bool CanUsePickup(Entity<CargoDeliveryPickupComponent> pickup, EntityUid requester) =>
-        Enabled && !TerminatingOrDeleted(pickup) && _mobState.IsAlive(requester) &&
-        _blocker.CanInteract(requester, pickup) && _interaction.InRangeAndAccessible(requester, pickup.Owner);
 
     private EntityUid? FindDeliveryCrate(Entity<CargoDeliveryPickupComponent> pickup)
     {
@@ -241,9 +276,15 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
     {
         var queue = pickup.Comp.Requisitions;
         var request = new CargoRequisition(requester, product);
-        if (!Enabled || pickup.Comp.Worker is not { } worker || !_mobState.IsAlive(worker) ||
+        // The Medbay staff share one receiving pallet and medication stock.
+        if (product == MedicalKit && (queue.Any(order => order.Product == MedicalKit) ||
+            pickup.Comp.Workers.Any(worker => TryComp<CargoDeliveryComponent>(worker, out var delivery) &&
+                                              delivery.Requisition?.Product == MedicalKit)))
+            return false;
+
+        if (!Enabled || !pickup.Comp.Workers.Any(worker => _mobState.IsAlive(worker)) ||
             queue.Count >= QueueLimit || queue.Contains(request) ||
-            TryComp(worker, out CargoDeliveryComponent? delivery) && delivery.Requisition == request)
+            pickup.Comp.Workers.Any(worker => TryComp(worker, out CargoDeliveryComponent? delivery) && delivery.Requisition == request))
             return false;
 
         queue.Add(request);
@@ -255,20 +296,20 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
     {
         pickupTransform = default!;
         mapGrid = default!;
-        worker = pickup.Comp.Worker.GetValueOrDefault();
-        if (!_mobState.IsAlive(worker) || HasComp<ActorComponent>(worker) ||
-            HasComp<LivingStationWorkClaimComponent>(worker) || !TryComp(pickup, out TransformComponent? source) ||
-            source.GridUid is not { } grid || !TryComp(grid, out MapGridComponent? gridComponent) ||
-            Transform(worker).GridUid != grid)
+        worker = default;
+        if (!TryComp(pickup, out TransformComponent? source) ||
+            source.GridUid is not { } grid || !TryComp(grid, out MapGridComponent? gridComponent))
             return false;
 
+        worker = pickup.Comp.Workers.FirstOrDefault(uid => _mobState.IsAlive(uid) && !HasComp<ActorComponent>(uid) &&
+            !HasComp<LivingStationWorkClaimComponent>(uid) && Transform(uid).GridUid == grid);
         pickupTransform = source;
         mapGrid = gridComponent;
-        return true;
+        return worker.IsValid();
     }
 
     private bool IsDropoffClear(EntityUid pallet, EntityUid grid, MapGridComponent mapGrid) =>
-        TryComp(pallet, out TransformComponent? transform) && transform.GridUid == grid &&
+        !DropoffReserved(pallet) && TryComp(pallet, out TransformComponent? transform) && transform.GridUid == grid &&
         !CratesOnPallet(transform, grid, mapGrid).Any();
 
     private EntityUid? FindDepartmentPallet(EntityUid grid, CargoDepartment department)
@@ -286,10 +327,14 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
     {
         if (product == MedicalKit || product == MedicalSupplies)
             return FindDepartmentPallet(grid, CargoDepartment.Medical) ?? fallback;
-        if (product == ElectricalSupplies)
+        if (product == ElectricalSupplies || product == EngineeringStock)
             return FindDepartmentPallet(grid, CargoDepartment.Engineering) ?? fallback;
-        if (product == JanitorialSupplies)
+        if (product == JanitorialSupplies || product == JanitorialStock)
             return FindDepartmentPallet(grid, CargoDepartment.Janitorial) ?? fallback;
+        if (product == MinedSteel)
+            return FindDepartmentPallet(grid, CargoDepartment.Engineering) ?? fallback;
+        if (product == MinedGlass)
+            return FindDepartmentPallet(grid, CargoDepartment.Science) ?? fallback;
         return fallback;
     }
 
@@ -303,6 +348,7 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
                 continue;
 
             var grid = transform.GridUid!.Value;
+            ProcessStagedOre(route, grid, mapGrid, worker);
             var staged = CratesOnPallet(transform, grid, mapGrid).OrderBy(crate => crate).ToArray();
             if (staged.Length != 0)
             {
@@ -315,6 +361,9 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
             }
 
             if (staged.Length == 0 && TryDispatchRequisition(route, transform, mapGrid, worker, grid))
+                continue;
+
+            if (TryDispatchOre(route, grid, mapGrid, worker))
                 continue;
 
             if (_timing.CurTime >= route.NextReturnAttempt &&
@@ -330,8 +379,26 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
         for (var i = 0; i < route.Requisitions.Count; i++)
         {
             var order = route.Requisitions[i];
+            List<EntProtoId>? stock = null;
+            if (TryComp(order.Requester, out CargoStockroomComponent? stockroom))
+                stock = GetRestockItems(order.Requester, stockroom);
+            if (stock is { Count: 0 })
+            {
+                route.Requisitions.RemoveAt(i--);
+                continue;
+            }
             var destination = GetDestination(grid, order.Product, route.Dropoff);
             if (!IsDropoffClear(destination, grid, mapGrid))
+                continue;
+
+            var cost = GetRequisitionCost(order.Product);
+            var station = _station.GetOwningStation(grid);
+            if (cost > 0 && GetCargoBalance(station) < cost)
+                continue;
+
+            var material = GetRequestedMaterial(order.Product);
+            var supplies = material is { } stackType ? FindRefinedStacks(grid, stackType) : [];
+            if (material != null && supplies.Sum(stack => stack.Comp.Count) < MaterialDeliverySize)
                 continue;
 
             var crate = SpawnAttachedTo(order.Product, source.Coordinates);
@@ -342,6 +409,15 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
             }
 
             route.Requisitions.RemoveAt(i);
+            if (material != null)
+                PackRefinedMaterials(supplies, crate, source.Coordinates);
+            if (stock != null)
+            {
+                foreach (var product in stock)
+                    SpawnInContainerOrDrop(product, crate, "entity_storage");
+            }
+            if (cost > 0 && station is { } accountStation)
+                _cargo.TryAdjustBankAccount(accountStation, CargoAccount, -cost);
             if (HasComp<MedicalChemistryKitComponent>(crate) &&
                 TryComp(order.Requester, out LivingStationMedicComponent? medic))
                 medic.ChemistryKit = crate;
@@ -357,13 +433,15 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
         var pallets = EntityQueryEnumerator<CargoDepartmentPalletComponent, TransformComponent>();
         while (pallets.MoveNext(out _, out var pallet, out var transform))
         {
-            if (transform.GridUid != grid || pallet.Department == CargoDepartment.Returns)
+            if (transform.GridUid != grid || pallet.Department is CargoDepartment.Returns or CargoDepartment.Export or
+                CargoDepartment.OreIntake or CargoDepartment.Materials)
                 continue;
 
             foreach (var crate in CratesOnPallet(transform, grid, mapGrid).OrderBy(crate => crate))
             {
-                if (CanHaul(crate) && Comp<EntityStorageComponent>(crate).Contents.ContainedEntities.Count == 0 &&
-                    TryAssignDelivery(worker, crate, returns, emptyReturn: true))
+                var checkedIn = TryComp<MedicalChemistryKitComponent>(crate, out var kit) && kit.CheckedIn;
+                if (CanHaul(crate) && (checkedIn || Comp<EntityStorageComponent>(crate).Contents.ContainedEntities.Count == 0) &&
+                    TryAssignDelivery(worker, crate, returns, emptyReturn: !checkedIn))
                 {
                     route.NextReturnAttempt = _timing.CurTime + TimeSpan.FromSeconds(15);
                     return;
@@ -386,8 +464,11 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
     private bool TryAssignDelivery(EntityUid worker, EntityUid crate, EntityUid dropoff,
         CargoRequisition? requisition = null, bool emptyReturn = false)
     {
+        if (DropoffReserved(dropoff))
+            return false;
+
         var timeout = HasComp<CargoDepartmentPalletComponent>(dropoff) ? DepartmentDeliveryTimeout : DeliveryTimeout;
-        if (!_work.TryAssign(worker, new EntityCoordinates(crate, Vector2.Zero), timeout))
+        if (!_work.TryAssign(worker, new EntityCoordinates(crate, Vector2.Zero), timeout, requisition?.Requester))
             return false;
 
         var order = AddComp<CargoDeliveryComponent>(worker);
@@ -399,11 +480,24 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
         return true;
     }
 
+    private bool DropoffReserved(EntityUid dropoff)
+    {
+        var orders = EntityQueryEnumerator<CargoDeliveryComponent>();
+        while (orders.MoveNext(out var order))
+        {
+            if (order.Dropoff == dropoff)
+                return true;
+        }
+
+        return false;
+    }
+
     public override void Update(float frameTime)
     {
         if (Enabled && _timing.CurTime >= _nextDispatch)
         {
             _nextDispatch = _timing.CurTime + TimeSpan.FromSeconds(1);
+            QueueStockroomOrders();
             DispatchRequisitions();
         }
 
@@ -419,7 +513,7 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
                 dropoff.GridUid is not { } grid || crateTransform.ParentUid != grid || workerTransform.GridUid != grid ||
                 !TryComp(grid, out MapGridComponent? mapGrid) || !_mobState.IsAlive(worker) || HasComp<ActorComponent>(worker))
             {
-                Finish(worker, "cancelled because the worker, crate, or drop-off is unavailable");
+                Finish(worker, $"cancelled because the worker, crate, or drop-off is unavailable (crate {order.Crate}, worker at {workerTransform.Coordinates})");
                 continue;
             }
 
@@ -430,13 +524,36 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
                 continue;
             }
 
-            if (_map.TileIndicesFor(grid, mapGrid, crateTransform.Coordinates) == deliveryTile)
+            var atDropoff = _map.TileIndicesFor(grid, mapGrid, crateTransform.Coordinates) == deliveryTile;
+            // Align freight with the pallet once it has been hauled alongside it.
+            var canAlign = HasComp<CargoDepartmentPalletComponent>(order.Dropoff) && crate.Puller == worker &&
+                           crateTransform.Coordinates.TryDistance(EntityManager, dropoff.Coordinates, out var gap) &&
+                           gap <= 1.5f && _interaction.InRangeUnobstructed(order.Crate, dropoff.Coordinates, 1.5f);
+            if (atDropoff || canAlign)
             {
                 order.Completed = true;
-                if (TryComp(order.Crate, out MedicalChemistryKitComponent? kit))
-                    kit.Delivered = true;
+                if (crate.Puller == worker)
+                {
+                    if (canAlign && _pulling.TryStopPull(order.Crate, crate, worker))
+                        _transform.SetCoordinates(order.Crate, dropoff.Coordinates);
+                    else if (!atDropoff)
+                    {
+                        order.Completed = false;
+                        continue;
+                    }
 
-                Finish(worker, "completed");
+                    _physics.SetLinearVelocity(order.Crate, Vector2.Zero);
+                }
+                if (TryComp(order.Crate, out MedicalChemistryKitComponent? kit) && !kit.Delivered)
+                {
+                    kit.Delivered = true;
+                    _chat.TrySendInGameICMessage(worker, Loc.GetString("living-station-cargo-chemicals-delivered"),
+                        InGameICChatType.Speak, ChatTransmitRange.Normal, hideLog: true, checkRadioPrefix: false);
+                }
+                if (order.Requisition is { } requisition)
+                    UnloadStockroomOrder(requisition, grid, storage, dropoff);
+
+                Finish(worker, $"completed for {Name(order.Crate)} at {Name(order.Dropoff)}");
                 continue;
             }
 
@@ -463,9 +580,50 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
                 continue;
             }
 
+            // A freight joint can stop the worker short of the steering system's door interaction.
+            // Reuse the normal door opening checks for doors ahead along the current path.
+            var departmentRoute = TryComp(order.Dropoff, out CargoDepartmentPalletComponent? pallet);
+            if (order.Pulling && pallet != null && order.NextApproach > 0 &&
+                order.NextApproach <= pallet.ApproachOffsets.Count && steering.Status == SteeringStatus.InRange)
+            {
+                SteerToPallet(worker, order, dropoff, steering, pallet);
+                continue;
+            }
+
+            if (departmentRoute && order.Pulling)
+            {
+                foreach (var door in _lookup.GetEntitiesInRange<DoorComponent>(crateTransform.Coordinates, 1f, LookupFlags.Uncontained))
+                {
+                    if (door.Comp.State == DoorState.Open && HasComp<AirlockComponent>(door.Owner) &&
+                        door.Comp.NextStateChange != null && _doors.CanOpen(door.Owner, door.Comp, worker))
+                        _doors.SetNextStateChange(door.Owner, TimeSpan.FromSeconds(2), door.Comp);
+                }
+            }
+            if (departmentRoute && TryOpenFreightDoor(worker, workerTransform, steering) &&
+                steering.Status != SteeringStatus.NoPath)
+                continue;
+
             if (steering.Status == SteeringStatus.NoPath)
             {
-                Finish(worker, $"could not reach the {(order.Pulling ? "drop-off" : "crate")} from {workerTransform.Coordinates}");
+                if (departmentRoute && order.NavigationRetries++ < 20)
+                {
+                    foreach (var door in _lookup.GetEntitiesInRange<DoorComponent>(
+                                 workerTransform.Coordinates, 2f, LookupFlags.Uncontained))
+                    {
+                        if (door.Comp.State == DoorState.Closed && _interaction.InRangeAndAccessible(worker, door.Owner))
+                            _doors.TryOpen(door.Owner, door.Comp, worker, quiet: true);
+                    }
+
+                    var destination = steering.Coordinates;
+                    var range = steering.Range;
+                    _steering.Unregister(worker);
+                    var retry = _steering.Register(worker, destination);
+                    retry.Range = range;
+                    retry.RepathRange = steering.RepathRange;
+                    continue;
+                }
+
+                Finish(worker, $"could not reach {Name(order.Dropoff)} from {workerTransform.Coordinates} toward {steering.Coordinates}");
                 continue;
             }
 
@@ -479,14 +637,57 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
             }
 
             order.Pulling = true;
-            // The worker walks past the pallet so the crate trailing on the pull joint reaches it.
-            var direction = dropoff.LocalRotation.RotateVec(Vector2.UnitX);
-            _steering.Register(worker, dropoff.Coordinates.Offset(direction * 1.3f), steering).Range = 0.15f;
+            SteerToPallet(worker, order, dropoff, steering, pallet);
         }
+    }
+
+    private void SteerToPallet(EntityUid worker, CargoDeliveryComponent order, TransformComponent dropoff,
+        NPCSteeringComponent steering, CargoDepartmentPalletComponent? pallet)
+    {
+        var approach = order.NextApproach++;
+        order.NavigationRetries = 0;
+        if (pallet != null)
+        {
+            _steering.Unregister(worker, steering);
+            steering = _steering.Register(worker, dropoff.Coordinates);
+            steering.RepathRange = 0.3f;
+        }
+        if (pallet != null && approach < pallet.ApproachOffsets.Count)
+        {
+            _steering.Register(worker, dropoff.Coordinates.Offset(pallet.ApproachOffsets[approach]), steering).Range = 0.3f;
+            return;
+        }
+
+        // The worker walks past the pallet so the crate trailing on the pull joint reaches it.
+        var direction = dropoff.LocalRotation.RotateVec(Vector2.UnitX);
+        _steering.Register(worker, dropoff.Coordinates.Offset(direction * 1.3f), steering).Range = 0.15f;
+    }
+
+    private bool TryOpenFreightDoor(EntityUid worker, TransformComponent transform, NPCSteeringComponent steering)
+    {
+        foreach (var next in steering.CurrentPath.Take(5))
+        {
+            if (!transform.Coordinates.TryDistance(EntityManager, next.Coordinates, out var distance) ||
+                distance > SharedInteractionSystem.InteractionRange)
+                break;
+
+            if (!TryComp<MapGridComponent>(next.GraphUid, out var grid))
+                continue;
+
+            foreach (var door in _map.GetLocalAnchoredEntities(next.GraphUid, grid, next.Box))
+            {
+                if (TryComp<DoorComponent>(door, out var component) && component.State == DoorState.Closed &&
+                    _interaction.InRangeAndAccessible(worker, door) && _doors.TryOpen(door, component, worker, quiet: true))
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private void Finish(EntityUid worker, string reason)
     {
+        _work.RecordOutcome(worker, reason, TryComp<CargoDeliveryComponent>(worker, out var order) && order.Completed);
         Log.Info($"Living Station cargo delivery {reason} for {ToPrettyString(worker)}.");
         RemComp<CargoDeliveryComponent>(worker);
     }
@@ -496,7 +697,7 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
         if (TryComp(order.Crate, out PullableComponent? crate) && crate.Puller == uid)
             _pulling.TryStopPull(order.Crate, crate, uid);
 
-        if (!order.Completed && order.Requisition is { } request && HasComp<MedicalChemistryKitComponent>(order.Crate) &&
+        if (!order.Completed && order.Requisition is { } request &&
             TryComp(request.Requester, out LivingStationMedicComponent? medic) && medic.ChemistryKit == order.Crate)
             medic.ChemistryKit = null;
 
@@ -519,7 +720,12 @@ public sealed partial class LivingStationCargoSystem : EntitySystem
         while (pickups.MoveNext(out var pickup))
         {
             pickup.Requisitions.Clear();
+            pickup.Workers.Clear();
             pickup.AutomaticHauling = false;
+            pickup.NextSteelExport = TimeSpan.Zero;
+            pickup.NextOreHaul = TimeSpan.Zero;
+            pickup.OreLoaded = false;
+            pickup.OreIssue = null;
         }
     }
 }

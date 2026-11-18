@@ -1,11 +1,13 @@
 using System.Linq;
 using System.Numerics;
+using Content.Server.Chat.Systems;
 using Content.Server.GameTicking;
 using Content.Server.NPC.Components;
 using Content.Server.NPC.Pathfinding;
 using Content.Server.NPC.Systems;
 using Content.Shared.ActionBlocker;
 using Content.Shared.CCVar;
+using Content.Shared.Chat;
 using Content.Shared.Chemistry.Components;
 using Content.Shared.Chemistry.EntitySystems;
 using Content.Shared.Chemistry.Reagent;
@@ -16,6 +18,7 @@ using Content.Shared.Mobs.Systems;
 using Content.Shared.Movement.Pulling.Components;
 using Content.Shared.NPC;
 using Content.Shared.Popups;
+using Content.Shared.Storage;
 using Content.Shared.Storage.Components;
 using Content.Shared.Storage.EntitySystems;
 using Robust.Shared.Configuration;
@@ -31,10 +34,18 @@ namespace Content.Server.LivingStation;
 public sealed partial class MedicalChemistryKitComponent : Component
 {
     public bool Delivered;
+    public bool CheckedIn;
+    public EntityUid[]? UnpackedContents;
 }
 
 [RegisterComponent]
-public sealed partial class MedicalChemistryWorkComponent : Component;
+public sealed partial class MedicalChemistryWorkComponent : Component
+{
+    public TimeSpan? MixAfter;
+}
+
+[RegisterComponent]
+public sealed partial class MedicalMedicationShelfComponent : Component;
 
 public sealed partial class LivingStationMedicalChemistrySystem : EntitySystem
 {
@@ -72,6 +83,7 @@ public sealed partial class LivingStationMedicalChemistrySystem : EntitySystem
     private const float MedbayRadius = 4f;
 
     [Dependency] private ActionBlockerSystem _blocker = default!;
+    [Dependency] private ChatSystem _chat = default!;
     [Dependency] private IConfigurationManager _config = default!;
     [Dependency] private IGameTiming _timing = default!;
     [Dependency] private LivingStationCargoSystem _cargo = default!;
@@ -82,16 +94,21 @@ public sealed partial class LivingStationMedicalChemistrySystem : EntitySystem
     [Dependency] private ServerGameTicker _ticker = default!;
     [Dependency] private SharedContainerSystem _containers = default!;
     [Dependency] private SharedEntityStorageSystem _storage = default!;
+    [Dependency] private SharedStorageSystem _shelves = default!;
     [Dependency] private SharedInteractionSystem _interaction = default!;
     [Dependency] private SharedPopupSystem _popup = default!;
     [Dependency] private SharedSolutionContainerSystem _solutions = default!;
     [Dependency] private SolutionTransferSystem _transfer = default!;
+    [Dependency] private SharedTransformSystem _transform = default!;
 
     private TimeSpan _nextCheck;
+    private readonly HashSet<EntityUid> _medicationBeakers = new();
 
     public override void Initialize()
     {
         SubscribeLocalEvent<MedicalChemistryWorkComponent, ComponentShutdown>(OnWorkShutdown);
+        SubscribeLocalEvent<MedicalChemistryKitComponent, StorageBeforeOpenEvent>(OnOpenKit);
+        SubscribeLocalEvent<MedicalChemistryKitComponent, StorageBeforeCloseEvent>(OnCloseKit);
         SubscribeLocalEvent<GameRunLevelChangedEvent>(OnRunLevelChanged);
     }
 
@@ -143,7 +160,7 @@ public sealed partial class LivingStationMedicalChemistrySystem : EntitySystem
                     continue;
                 }
 
-                if (TryGetKitInMedbay((worker, medic), out var crate) && GetLowStock((worker, medic)).Count > 0 &&
+                if (TryGetKitInMedbay((worker, medic), out var crate) &&
                     _work.TryAssign(worker, new EntityCoordinates(crate, Vector2.Zero), WorkTimeout))
                 {
                     AddComp<MedicalChemistryWorkComponent>(worker);
@@ -153,7 +170,7 @@ public sealed partial class LivingStationMedicalChemistrySystem : EntitySystem
         }
 
         var orders = EntityQueryEnumerator<MedicalChemistryWorkComponent, LivingStationMedicComponent>();
-        while (orders.MoveNext(out var worker, out _, out var medic))
+        while (orders.MoveNext(out var worker, out var order, out var medic))
         {
             if (!TryComp(worker, out LivingStationWorkClaimComponent? claim) || !CanWork(worker) ||
                 !TryGetKitInMedbay((worker, medic), out var crate) || claim.Target.EntityId != crate ||
@@ -165,17 +182,8 @@ public sealed partial class LivingStationMedicalChemistrySystem : EntitySystem
 
             if (_interaction.InRangeAndAccessible(worker, crate, MixRange))
             {
-                var needs = GetLowStock((worker, medic));
-                if (needs.Count > 0)
-                {
-                    // Any unused reagents and partial mixtures stay in their containers.
-                    medic.ChemistryKit = null;
-                    var mixed = TryMix(worker, crate, needs);
-                    _popup.PopupEntity(Loc.GetString(mixed
-                        ? "living-station-medical-chemicals-mixed"
-                        : "living-station-medical-chemicals-missing"), worker);
-                }
-                RemComp<MedicalChemistryWorkComponent>(worker);
+                _steering.Unregister(worker);
+                ReceiveKit(worker, medic, crate, order);
                 continue;
             }
 
@@ -198,11 +206,12 @@ public sealed partial class LivingStationMedicalChemistrySystem : EntitySystem
     {
         var point = medic.Comp.TreatmentPoint!.Value;
         var stock = new Dictionary<ProtoId<ReagentPrototype>, FixedPoint2>();
-        medic.Comp.MedicationBeakers.RemoveAll(beaker => TerminatingOrDeleted(beaker) || EntityManager.IsQueuedForDeletion(beaker));
-        foreach (var beaker in medic.Comp.MedicationBeakers)
+        _medicationBeakers.RemoveWhere(beaker => TerminatingOrDeleted(beaker) || EntityManager.IsQueuedForDeletion(beaker));
+        foreach (var beaker in _medicationBeakers)
         {
             var transform = Transform(beaker);
-            if (transform.GridUid != point.EntityId || _containers.IsEntityOrParentInContainer(beaker) ||
+            if (transform.GridUid != point.EntityId ||
+                (_containers.IsEntityOrParentInContainer(beaker) && !HasComp<MedicalMedicationShelfComponent>(transform.ParentUid)) ||
                 !point.TryDistance(EntityManager, transform.Coordinates, out var distance) || distance > MedbayRadius ||
                 !_solutions.TryGetSolution(beaker, "beaker", out _, out var solution) ||
                 solution.Contents.Count != 1)
@@ -225,33 +234,106 @@ public sealed partial class LivingStationMedicalChemistrySystem : EntitySystem
                point.TryDistance(EntityManager, Transform(crate).Coordinates, out var distance) && distance <= MedbayRadius;
     }
 
-    private bool TryMix(EntityUid worker, EntityUid crate, List<MedicationBatch> needs)
+    private void ReceiveKit(EntityUid worker, LivingStationMedicComponent medic, EntityUid crate, MedicalChemistryWorkComponent order)
     {
-        if (!TryComp(crate, out EntityStorageComponent? storage) || storage.Open ||
-            !_blocker.CanInteract(worker, crate))
-            return false;
+        if (!TryComp(crate, out EntityStorageComponent? storage) || !_blocker.CanInteract(worker, crate))
+            return;
 
-        var contents = storage.Contents.ContainedEntities.ToArray();
+        var kit = Comp<MedicalChemistryKitComponent>(crate);
+        if (order.MixAfter == null)
+        {
+            if (!storage.Open)
+            {
+                if (!_storage.TryOpenStorage(worker, crate))
+                {
+                    RemComp<MedicalChemistryWorkComponent>(worker);
+                    return;
+                }
+            }
+
+            Speak(worker, "living-station-medical-chemicals-received");
+            order.MixAfter = _timing.CurTime + TimeSpan.FromSeconds(2);
+            return;
+        }
+
+        if (_timing.CurTime < order.MixAfter)
+            return;
+
+        var needs = GetLowStock((worker, medic));
+        var stocked = needs.Count > 0 && storage.Open && TryMix(worker, crate, kit, medic.TreatmentPoint!.Value, needs);
+        if (storage.Open && !_storage.TryCloseStorage(crate, worker))
+        {
+            RemComp<MedicalChemistryWorkComponent>(worker);
+            return;
+        }
+
+        kit.CheckedIn = true;
+        kit.UnpackedContents = null;
+        medic.ChemistryKit = null;
+        Speak(worker, stocked ? "living-station-medical-chemicals-mixed" : needs.Count == 0
+            ? "living-station-medical-chemicals-shelf-stocked" : "living-station-medical-chemicals-missing");
+        RemComp<MedicalChemistryWorkComponent>(worker);
+    }
+
+    private bool TryMix(EntityUid worker, EntityUid crate, MedicalChemistryKitComponent kit, EntityCoordinates treatment,
+        List<MedicationBatch> needs)
+    {
+        var bench = EntityQueryEnumerator<MedicalMedicationShelfComponent, StorageComponent, TransformComponent>();
+        EntityUid? shelf = null;
+        var stock = Transform(worker).Coordinates;
+        while (bench.MoveNext(out var surface, out _, out _, out var transform))
+        {
+            if (!treatment.TryDistance(EntityManager, transform.Coordinates, out var distance) || distance > MedbayRadius ||
+                !_interaction.InRangeAndAccessible(worker, surface))
+                continue;
+
+            shelf = surface;
+            break;
+        }
+
+        var contents = (kit.UnpackedContents ?? []).Where(item => !TerminatingOrDeleted(item) &&
+            !_containers.IsEntityOrParentInContainer(item) &&
+            Transform(item).Coordinates.TryDistance(EntityManager, Transform(crate).Coordinates, out var distance) && distance <= 0.7f)
+            .ToArray();
         var beakers = contents
             .Where(item => _solutions.TryGetSolution(item, "beaker", out _, out var solution) &&
                            solution.Volume == 0)
             .Take(needs.Count)
             .ToArray();
-        if (beakers.Length == 0 || !_storage.TryOpenStorage(worker, crate))
-            return false;
-
         var made = 0;
         for (var i = 0; i < beakers.Length; i++)
         {
             if (!Mix(worker, beakers[i], needs[i], contents))
                 continue;
 
-            Comp<LivingStationMedicComponent>(worker).MedicationBeakers.Add(beakers[i]);
+            if (shelf is not { } surface || !_shelves.Insert(surface, beakers[i], out _, user: worker))
+            {
+                var offset = new Vector2((i % 5 - 2) * 0.13f, (i / 5 - 1) * 0.13f);
+                _transform.SetCoordinates(beakers[i], stock.Offset(offset));
+            }
+            _medicationBeakers.Add(beakers[i]);
             made++;
         }
 
         return made == needs.Count;
     }
+
+    private void OnOpenKit(Entity<MedicalChemistryKitComponent> kit, ref StorageBeforeOpenEvent args)
+    {
+        if (kit.Comp.Delivered && !kit.Comp.CheckedIn && TryComp<EntityStorageComponent>(kit, out var storage))
+            kit.Comp.UnpackedContents = storage.Contents.ContainedEntities.ToArray();
+    }
+
+    private void OnCloseKit(Entity<MedicalChemistryKitComponent> kit, ref StorageBeforeCloseEvent args)
+    {
+        if (args.User is { } worker && HasComp<MedicalChemistryWorkComponent>(worker) &&
+            TryComp<LivingStationMedicComponent>(worker, out var medic) && medic.ChemistryKit == kit.Owner)
+            args.Contents.RemoveWhere(item => kit.Comp.UnpackedContents?.Contains(item) != true || _medicationBeakers.Contains(item));
+    }
+
+    private void Speak(EntityUid worker, string message) =>
+        _chat.TrySendInGameICMessage(worker, Loc.GetString(message), InGameICChatType.Speak,
+            ChatTransmitRange.Normal, hideLog: true, checkRadioPrefix: false);
 
     private EntityUid? FindIngredient(EntityUid[] contents, ProtoId<ReagentPrototype> reagent, FixedPoint2 amount)
     {
@@ -311,6 +393,7 @@ public sealed partial class LivingStationMedicalChemistrySystem : EntitySystem
         if (ev.Old != GameRunLevel.InRound || ev.New == GameRunLevel.InRound)
             return;
 
+        _medicationBeakers.Clear();
         var orders = AllEntityQuery<MedicalChemistryWorkComponent>();
         while (orders.MoveNext(out var worker, out _))
             RemComp<MedicalChemistryWorkComponent>(worker);

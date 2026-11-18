@@ -51,6 +51,8 @@ public sealed partial class LivingStationStoryDirectorSystem : EntitySystem
         _rumorExpires = null;
         _rumorVerified = false;
         _lastStart = null;
+        _cargoFault = null;
+        _nextMaintenanceIsCargo = false;
         _next = StoryIncident.Maintenance;
         _eligibleAt = _timing.CurTime + Warmup;
         _nextCheck = _eligibleAt;
@@ -60,6 +62,7 @@ public sealed partial class LivingStationStoryDirectorSystem : EntitySystem
 
     internal void Advance(TimeSpan now)
     {
+        UpdateCargoPowerFault(now);
         if (now < _nextCheck || _ticker.RunLevel != GameRunLevel.InRound || _maps.GetSelectedMap()?.ID != "Saltern")
             return;
 
@@ -100,7 +103,7 @@ public sealed partial class LivingStationStoryDirectorSystem : EntitySystem
             "chaotic" => (2, TimeSpan.FromMinutes(5), ChaoticRumorLifetime),
             _ => (1, StartInterval, RumorLifetime),
         };
-        var activeCount = (MaintenanceActive ? 1 : 0) + (RumorActive ? 1 : 0);
+        var activeCount = (MaintenanceActive || _cargoFault != null ? 1 : 0) + (RumorActive ? 1 : 0);
         if (activeCount >= capacity || _lastStart is { } lastStart && now - lastStart < interval)
             return;
 
@@ -112,8 +115,10 @@ public sealed partial class LivingStationStoryDirectorSystem : EntitySystem
             return;
         }
 
+        var cargoStarted = _next == StoryIncident.Maintenance && _nextMaintenanceIsCargo &&
+                           !MaintenanceActive && _cargoFault == null && TryStartCargoPowerFault(now);
         var started = _next == StoryIncident.Maintenance
-            ? !MaintenanceActive && _engineering.TryStartRepair()
+            ? cargoStarted || !MaintenanceActive && _cargoFault == null && _engineering.TryStartRepair()
             : _rumorExpires == null && _incidents.TryStartRumor();
         if (!started)
         {
@@ -129,12 +134,14 @@ public sealed partial class LivingStationStoryDirectorSystem : EntitySystem
             _rumorVerified = false;
             _rumorExpires = now + rumorLifetime;
         }
-        else
+        else if (!cargoStarted)
         {
             _repairExpires = now + LivingStationEngineeringSystem.RepairTimeout;
         }
 
-        Log.Info($"Living Station director started {_next}.");
+        if (_next == StoryIncident.Maintenance)
+            _nextMaintenanceIsCargo = !cargoStarted;
+        Log.Info($"Living Station director started {(cargoStarted ? "Cargo power fault" : _next.ToString())}.");
         _next = _next == StoryIncident.Maintenance ? StoryIncident.Rumor : StoryIncident.Maintenance;
     }
 

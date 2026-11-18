@@ -57,7 +57,7 @@ public sealed partial class LivingStationBarSystem : EntitySystem
         SubscribeLocalEvent<GameRunLevelChangedEvent>(OnRunLevelChanged);
     }
 
-    internal void StartShift(MapId mapId)
+    internal bool StartShift(MapId mapId)
     {
         var counters = EntityQueryEnumerator<BarServiceCounterComponent, PlaceableSurfaceComponent, TransformComponent>();
         while (counters.MoveNext(out var uid, out var counter, out var surface, out var transform))
@@ -66,9 +66,11 @@ public sealed partial class LivingStationBarSystem : EntitySystem
                 continue;
 
             counter.Bartender = SpawnAttachedTo(Bartender, transform.Coordinates.Offset(counter.StaffOffset));
+            EntityManager.System<LivingStationSystem>().RegisterCrew(counter.Bartender.Value, LivingStationDepartment.Service);
             SpawnAttachedTo(WaterBottle, transform.Coordinates.Offset(counter.StockOffset));
-            return;
+            return true;
         }
+        return false;
     }
 
     private void OnGetVerbs(Entity<BarServiceCounterComponent> counter, ref GetVerbsEvent<Verb> args)
@@ -119,7 +121,7 @@ public sealed partial class LivingStationBarSystem : EntitySystem
             var held = _hands.GetActiveItem(worker);
             var drink = held == null ? FindWaterAt(coordinates.Offset(counter.Comp.StockOffset)) : held;
             if (drink is { } bottle && IsWater(bottle) &&
-                _work.TryAssign(worker, new EntityCoordinates(counter, Vector2.Zero), OrderTimeout))
+                _work.TryAssign(worker, new EntityCoordinates(counter, Vector2.Zero), OrderTimeout, customer))
             {
                 AddComp<BarServiceOrderComponent>(worker).Drink = bottle;
                 EnsureComp<ActiveNPCComponent>(worker);
@@ -149,7 +151,7 @@ public sealed partial class LivingStationBarSystem : EntitySystem
             var counterLocation = counterTransform.Coordinates;
             if (FindWaterAt(counterLocation) != null)
             {
-                Finish(worker, "completed, water is on the counter");
+                Finish(worker, "completed, water is on the counter", success: true);
                 continue;
             }
 
@@ -178,7 +180,7 @@ public sealed partial class LivingStationBarSystem : EntitySystem
                 {
                     // Use the normal targeted drop so the sealed bottle can be placed as-is.
                     var served = _hands.TryDrop(worker, order.Drink, counterLocation) && IsAt(order.Drink, counterLocation);
-                    Finish(worker, served ? "completed, water is on the counter" : "could not place water on the counter");
+                    Finish(worker, served ? "completed, water is on the counter" : "could not place water on the counter", success: served);
                 }
                 else
                 {
@@ -227,8 +229,9 @@ public sealed partial class LivingStationBarSystem : EntitySystem
         return offset.X < SurfaceHalfWidth && offset.Y < SurfaceHalfWidth;
     }
 
-    private void Finish(EntityUid worker, string outcome)
+    private void Finish(EntityUid worker, string outcome, bool success = false)
     {
+        _work.RecordOutcome(worker, outcome, success);
         Log.Info($"Living Station bar order {outcome} for {ToPrettyString(worker)}.");
         RemComp<BarServiceOrderComponent>(worker);
     }

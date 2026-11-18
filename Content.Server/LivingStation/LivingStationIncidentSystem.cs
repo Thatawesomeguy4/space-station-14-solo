@@ -3,6 +3,8 @@ using System.Threading.Tasks;
 using Content.Server.Chat.Systems;
 using Content.Server.GameTicking;
 using Content.Server.Maps;
+using Content.Server.NPC.HTN;
+using Content.Server.NPC.HTN.PrimitiveTasks.Operators.Interactions;
 using Content.Server.Radio.EntitySystems;
 using Content.Shared.ActionBlocker;
 using Content.Shared.CCVar;
@@ -17,6 +19,7 @@ using Content.Shared.Radio.Components;
 using Microsoft.Data.Sqlite;
 using Robust.Shared.Configuration;
 using Robust.Shared.ContentPack;
+using Robust.Shared.Localization;
 using Robust.Shared.Player;
 using Robust.Shared.Prototypes;
 using Robust.Shared.Timing;
@@ -39,6 +42,7 @@ public sealed partial class LivingStationIncidentSystem : EntitySystem
     [Dependency] private MobStateSystem _mobState = default!;
     [Dependency] private SharedInteractionSystem _interaction = default!;
     [Dependency] private SharedPoweredLightSystem _lights = default!;
+    [Dependency] private LivingStationBartenderDialogueSystem _dialogue = default!;
 
     internal LivingStationMemoryStore? Memory { get; set; }
     internal LightIncidentNotes Notes { get; private set; }
@@ -46,6 +50,7 @@ public sealed partial class LivingStationIncidentSystem : EntitySystem
     private EntityUid? _engineer;
     private EntityUid? _security;
     private EntityUid? _fixture;
+    private readonly Dictionary<string, EntityUid> _otherHeads = new(StringComparer.OrdinalIgnoreCase);
     private Task<LightIncidentNotes>? _load;
     private long? _observationThisRound;
     private IncidentReport _sending;
@@ -62,6 +67,8 @@ public sealed partial class LivingStationIncidentSystem : EntitySystem
     }
 
     internal bool RumorVerified => _rumor is IncidentReport.VerifiedWorking or IncidentReport.VerifiedFailed;
+
+    internal void RegisterDepartmentHead(string title, EntityUid head) => _otherHeads[title] = head;
 
     private bool Enabled => _config.GetCVar(CCVars.LivingStationEnabled) && _ticker.RunLevel == GameRunLevel.InRound;
 
@@ -222,17 +229,49 @@ public sealed partial class LivingStationIncidentSystem : EntitySystem
             Reply(_engineer, customer, question, LightIncidentWitness.ChiefEngineer);
         else if (LivingStationBartenderDialogueSystem.TryGetAddressedMessage(ev.Message, "head of security", out question))
             Reply(_security, customer, question, LightIncidentWitness.HeadOfSecurity);
+        else
+        {
+            foreach (var (title, head) in _otherHeads)
+            {
+                if (!LivingStationBartenderDialogueSystem.TryGetAddressedMessage(ev.Message, title, out question))
+                    continue;
+
+                if (CanTalk(head, customer))
+                    Ask(head, customer, question, () => ReadDepartmentContext(head, title));
+                break;
+            }
+        }
     }
+
+    private bool CanTalk(EntityUid npc, EntityUid customer) =>
+        npc != customer && Available(npc) && _mobState.IsAlive(customer) && _blocker.CanSpeak(npc) &&
+        _interaction.InRangeUnobstructed(npc, customer, 4f);
 
     private void Reply(EntityUid? speaker, EntityUid customer, string question, LightIncidentWitness witness)
     {
-        if (speaker is not { } npc || npc == customer || HasComp<ActorComponent>(npc) ||
-            !_mobState.IsAlive(npc) || !_mobState.IsAlive(customer) || !_blocker.CanSpeak(npc) ||
-            !_interaction.InRangeUnobstructed(npc, customer, 4f))
+        if (speaker is not { } npc || !CanTalk(npc, customer))
             return;
 
         var remembered = witness == LightIncidentWitness.ChiefEngineer ? Notes.ObservedAt : Notes.ReportedAt;
-        var speech = question.Trim().TrimEnd('?', '.', '!').ToLowerInvariant() switch
+        var normalized = question.Trim().TrimEnd('?', '.', '!').ToLowerInvariant();
+        if (witness == LightIncidentWitness.ChiefEngineer &&
+            normalized is "what are you working on" or "what are you working on right now" or
+                "what is your current assignment" or "what's your current assignment")
+        {
+            _nextReply = _timing.CurTime + ReplyCooldown;
+            Say(npc, _dialogue.EngineeringFallback(ReadEngineeringFacts(npc, customer)));
+            return;
+        }
+
+        if (witness == LightIncidentWitness.ChiefEngineer &&
+            normalized is "what is the status of my repair" or "what's the status of my repair" or "repair status")
+        {
+            _nextReply = _timing.CurTime + ReplyCooldown;
+            Say(npc, ReadRepairStatus(customer) ?? Loc.GetString("living-station-engineering-followup-none"));
+            return;
+        }
+
+        var speech = normalized switch
         {
             "what happened" or "what do you remember" when remembered != null =>
                 witness == LightIncidentWitness.ChiefEngineer ? "living-station-incident-observed" : "living-station-incident-reported",
@@ -251,12 +290,151 @@ public sealed partial class LivingStationIncidentSystem : EntitySystem
             _ => null,
         };
         if (speech == null)
+        {
+            if (witness == LightIncidentWitness.ChiefEngineer)
+                Ask(npc, customer, question, () => ReadEngineeringContext(npc, customer));
+            else
+                Ask(npc, customer, question, () => ReadDepartmentContext(npc, "Head of Security"));
             return;
+        }
 
         _nextReply = _timing.CurTime + ReplyCooldown;
-        _chat.TrySendInGameICMessage(npc, Loc.GetString(speech), InGameICChatType.Speak, ChatTransmitRange.Normal,
-            hideLog: true, checkRadioPrefix: false);
+        Say(npc, Loc.GetString(speech));
     }
+
+    private void Ask(EntityUid npc, EntityUid customer, string question, Func<DepartmentHeadContext> readFacts)
+    {
+        _nextReply = _timing.CurTime + ReplyCooldown;
+        if (!_dialogue.TryAskDepartmentHead(npc, customer, question, readFacts))
+            Say(npc, readFacts().Fallback);
+    }
+
+    private bool HasWork(EntityUid npc) =>
+        TryComp<LivingStationWorkClaimComponent>(npc, out var claim) && Exists(claim.Target.EntityId);
+
+    private string? ReadRepairStatus(EntityUid customer) =>
+        EntityManager.System<LivingStationEngineeringSystem>().GetRecentRepairStatus(customer);
+
+    private DepartmentHeadContext ReadEngineeringContext(EntityUid npc, EntityUid customer)
+    {
+        var facts = ReadEngineeringFacts(npc, customer);
+        return new("Chief Engineer", facts, facts.RecentRepair ?? _dialogue.EngineeringFallback(facts));
+    }
+
+    private ChiefEngineerContext ReadEngineeringFacts(EntityUid npc, EntityUid customer)
+    {
+        var working = HasWork(npc);
+        return new(working, Loc.GetString(CurrentLightStatus()),
+            Notes.ObservedAt != null,
+            working && TryComp<EngineeringRepairComponent>(npc, out var order) ? Loc.GetString(order.Stage) : null,
+            ReadRepairStatus(customer), ReadRoutine(npc));
+    }
+
+    private DepartmentHeadContext ReadDepartmentContext(EntityUid npc, string title)
+    {
+        var working = HasWork(npc);
+        var key = title switch
+        {
+            "Head of Security" when working => "living-station-head-security-busy",
+            "Head of Security" => "living-station-head-security-idle",
+            "Quartermaster" when working => "living-station-head-cargo-busy",
+            "Quartermaster" => "living-station-head-cargo-idle",
+            "Chief Medical Officer" when working => "living-station-head-medical-busy",
+            "Chief Medical Officer" => "living-station-head-medical-idle",
+            "Head of Personnel" => "living-station-head-personnel",
+            _ => "living-station-head-science",
+        };
+        var status = Loc.GetString(key);
+        if (title == "Head of Security" && Notes.ReportedAt != null)
+            status += " " + Loc.GetString("living-station-incident-reported");
+
+        var routine = working ? null : ReadRoutine(npc);
+        return new(title, new DepartmentStatus(working, status, routine), routine == null ? status : status + " " + routine);
+    }
+
+    private string? ReadRoutine(EntityUid npc)
+    {
+        if (HasWork(npc) || !TryComp<LivingStationIdleRouteComponent>(npc, out var route))
+            return null;
+
+        return Loc.GetString(route.Activity switch
+        {
+            LivingStationRoutine.StockroomVisit => "living-station-routine-stockroom",
+            LivingStationRoutine.BarBreak => route.Walking ? "living-station-routine-going-to-bar" : "living-station-routine-bar",
+            LivingStationRoutine.ReturningHome => "living-station-routine-returning",
+            _ => "living-station-routine-rounds",
+        });
+    }
+
+    internal DepartmentHeadContext ReadCrewConversationContext(EntityUid npc, LivingStationDepartment department)
+    {
+        var context = ReadConversationRole(npc, department);
+        var working = TryComp<LivingStationWorkClaimComponent>(npc, out var claim) && Exists(claim.Target.EntityId);
+        var target = working ? Name(claim!.Target.EntityId) : null;
+        string? stage = null;
+        if (working)
+        {
+            LocId stageKey = department switch
+            {
+                LivingStationDepartment.Engineering when TryComp<EngineeringRepairComponent>(npc, out var repair) => repair.Stage,
+                LivingStationDepartment.Cargo => "living-station-conversation-cargo",
+                LivingStationDepartment.Medical => "living-station-conversation-medical",
+                LivingStationDepartment.Security => "living-station-conversation-security",
+                LivingStationDepartment.Service when HasComp<BarServiceOrderComponent>(npc) => "living-station-conversation-service",
+                _ => "living-station-conversation-working",
+            };
+            stage = Loc.GetString(stageKey);
+        }
+        else if (TryComp<HTNComponent>(npc, out var htn) && htn.Enabled &&
+            htn.Plan is { } plan && plan.Index >= 0 && plan.Index < plan.Tasks.Count)
+        {
+            var activity = plan.CurrentOperator switch
+            {
+                MopPuddleOperator => "living-station-conversation-mopping",
+                BagTrashOperator => "living-station-conversation-trash",
+                _ => null,
+            };
+            if (activity != null)
+            {
+                working = true;
+                stage = Loc.GetString(activity);
+            }
+        }
+
+        var incident = npc == _engineer && Notes.ObservedAt != null ? Loc.GetString("living-station-incident-observed") :
+            npc == _security && Notes.ReportedAt != null ? Loc.GetString("living-station-incident-reported") : null;
+        return context with { Facts = new CrewConversationFacts(working, target, stage, working ? null : ReadRoutine(npc), incident) };
+    }
+
+    private DepartmentHeadContext ReadConversationRole(EntityUid npc, LivingStationDepartment department)
+    {
+        if (npc == _engineer)
+            return ReadEngineeringContext(npc, npc);
+        if (npc == _security)
+            return ReadDepartmentContext(npc, "Head of Security");
+        foreach (var (title, head) in _otherHeads)
+        {
+            if (head == npc)
+                return ReadDepartmentContext(npc, title);
+        }
+
+        var role = MetaData(npc).EntityPrototype?.ID == "MobLivingStationBartender" ? "Bartender" : department switch
+        {
+            LivingStationDepartment.Cargo => "Cargo technician",
+            LivingStationDepartment.Engineering => "Station engineer",
+            LivingStationDepartment.Medical => "Station medic",
+            LivingStationDepartment.Security => "Security officer",
+            LivingStationDepartment.Science => "Research crew member",
+            _ => "Service crew member",
+        };
+        var routine = ReadRoutine(npc);
+        var status = Loc.GetString("living-station-idle-conversation-status", ("department", department.ToString()));
+        return new(role, new DepartmentStatus(false, status, routine), status);
+    }
+
+    private void Say(EntityUid npc, string message) =>
+        _chat.TrySendInGameICMessage(npc, message, InGameICChatType.Speak, ChatTransmitRange.Normal,
+            hideLog: true, checkRadioPrefix: false);
 
     private string VerifyRumor(EntityUid engineer)
     {
@@ -295,6 +473,7 @@ public sealed partial class LivingStationIncidentSystem : EntitySystem
 
         _engineer = null;
         _security = null;
+        _otherHeads.Clear();
         _fixture = null;
         _observationThisRound = null;
         EndRumor();

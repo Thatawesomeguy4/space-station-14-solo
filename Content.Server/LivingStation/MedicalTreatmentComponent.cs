@@ -19,7 +19,6 @@ public sealed partial class LivingStationMedicComponent : Component
     public EntityCoordinates? TreatmentPoint;
     public EntityUid? ChemistryKit;
     public TimeSpan NextChemistryAttempt;
-    public readonly List<EntityUid> MedicationBeakers = new();
 }
 
 [RegisterComponent]

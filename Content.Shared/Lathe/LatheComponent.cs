@@ -121,4 +121,7 @@ namespace Content.Shared.Lathe
     /// </summary>
     [ByRefEvent]
     public readonly record struct LatheStartPrintingEvent(LatheRecipePrototype Recipe);
+
+    [ByRefEvent]
+    public readonly record struct LatheItemPrintedEvent(EntityUid Item);
 }

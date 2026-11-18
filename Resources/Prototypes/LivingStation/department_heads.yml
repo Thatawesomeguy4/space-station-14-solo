@@ -1,0 +1,25 @@
+- type: entity
+  parent: MobHuman
+  id: MobLivingStationHeadOfPersonnel
+  name: head of personnel
+  components:
+  - type: InputMover
+  - type: MobMover
+  - type: Loadout
+    prototypes: [HoPGear]
+    roleLoadout: [JobHeadOfPersonnel]
+  - type: NpcFactionMember
+    factions: [NanoTrasen]
+
+- type: entity
+  parent: MobHuman
+  id: MobLivingStationResearchDirector
+  name: research director
+  components:
+  - type: InputMover
+  - type: MobMover
+  - type: Loadout
+    prototypes: [ResearchDirectorGear]
+    roleLoadout: [JobResearchDirector]
+  - type: NpcFactionMember
+    factions: [NanoTrasen]
